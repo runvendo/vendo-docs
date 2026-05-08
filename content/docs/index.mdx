@@ -1,0 +1,46 @@
+---
+title: Vendo SDKs
+description: One SDK contract, three languages. Python, TypeScript, and Swift.
+---
+
+import { Card, Cards } from "fumadocs-ui/components/card";
+
+Vendo SDKs give you a consistent surface for connections, credentials, billing, events, and webhooks across Python, TypeScript, and Swift.
+
+**One env var is the only switch.** Set `VENDO_API_KEY` to upgrade from plain OSS to a fully managed Vendo deployment — no code changes needed.
+
+## Choose your language
+
+<Cards>
+  <Card
+    title="Python"
+    description="pip install vendo-sdk — async-first, stdlib only"
+    href="/docs/getting-started/python"
+  />
+  <Card
+    title="TypeScript"
+    description="npm install @vendodev/sdk — Node + browser, zero deps"
+    href="/docs/getting-started/typescript"
+  />
+  <Card
+    title="Swift"
+    description="Swift Package Manager — iOS 15+, macOS 12+, tvOS, watchOS"
+    href="/docs/getting-started/swift"
+  />
+</Cards>
+
+## Two modes, one codebase
+
+| Mode | When | What changes |
+|------|------|--------------|
+| **OSS / BYOK** | `VENDO_API_KEY` not set | SDK reads conventional env vars (`OPENAI_API_KEY`, etc.) |
+| **Vendo** | `VENDO_API_KEY` set | SDK fetches OAuth-refreshed tokens from `credentials.vendo.run` |
+
+The SDK auto-detects at startup. Your application code never branches on the mode.
+
+## Sections
+
+- [Getting started](/docs/getting-started) — pick your SDK and be running in 5 minutes
+- [Concepts](/docs/concepts/two-modes) — understand modes, multi-tenancy, errors, events, and webhooks
+- [Cookbook](/docs/cookbook) — copy-paste recipes with Python, TypeScript, and Swift tabs
+- [SDK reference](/docs/sdks/python) — per-language install, public surface, and changelog links

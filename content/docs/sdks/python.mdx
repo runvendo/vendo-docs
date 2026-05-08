@@ -1,0 +1,160 @@
+---
+title: Python SDK
+description: vendo-sdk v1.0.0 — install, public surface, and reference links.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Package
+
+| | |
+|--|--|
+| Package | `vendo-sdk` |
+| Version | `1.0.0` |
+| PyPI | [pypi.org/project/vendo-sdk](https://pypi.org/project/vendo-sdk) |
+| Source | [github.com/runvendo/vendo-sdk-py](https://github.com/runvendo/vendo-sdk-py) |
+| Changelog | [CHANGELOG.md](https://github.com/runvendo/vendo-sdk-py/blob/main/CHANGELOG.md) |
+| Requires | Python 3.9+ |
+
+## Install
+
+```bash
+pip install vendo-sdk
+
+# With HTTP session helper (requests):
+pip install "vendo-sdk[http]"
+
+# With async support (aiohttp):
+pip install "vendo-sdk[async]"
+```
+
+## Public surface
+
+### Module-level shortcuts
+
+```python
+import vendo
+
+vendo.token(slug)                        # str — fetch single token
+vendo.tokens(slugs)                      # dict[str, str | None]
+vendo.session(slug)                      # requests.Session (requires [http])
+vendo.connect_url(slug, return_to=None)  # str (Vendo mode only)
+vendo.is_vendo_mode()                    # bool
+```
+
+### Class-based client
+
+```python
+from vendo import Vendo, AsyncVendo
+
+client = Vendo(api_key=None, base_url=None)
+client.token(slug)
+client.tokens(slugs)
+client.session(slug)
+client.connect_url(slug, return_to=None)
+client.invalidate(slug)
+
+# Scoping
+client.for_request(headers)  # → Vendo (Vendo mode only)
+client.for_user(jwt)         # → Vendo (Vendo mode only)
+
+# Sub-APIs
+client.connections           # ConnectionsAPI
+client.integrations          # IntegrationsAPI
+client.billing               # BillingAPI (Vendo mode only)
+client.events                # EventsAPI (Vendo mode only)
+client.webhooks              # WebhooksAPI (works in both modes)
+client.sso                   # SSOAPI
+client.deployment            # DeploymentAPI
+client.reconciler            # ReconcilerAPI
+```
+
+### Async client
+
+```python
+from vendo import AsyncVendo, aio
+
+async with AsyncVendo() as client:
+    tok = await client.token(slug)
+    conns = await client.connections.list()
+
+# Module-level async shortcuts:
+await aio.token(slug)
+await aio.tokens(slugs)
+await aio.connections.list()
+await aio.integrations.list()
+await aio.billing.balance()
+```
+
+### ConnectionsAPI
+
+```python
+client.connections.list()          # list[Connection]
+client.connections.get(slug)       # Connection | None
+```
+
+### IntegrationsAPI
+
+```python
+client.integrations.list()         # list[Integration]
+client.integrations.get(slug)      # Integration | None
+client.integrations.env_vars(slug) # list[str]
+```
+
+### BillingAPI (Vendo mode only)
+
+```python
+client.billing.balance()           # Balance
+```
+
+### EventsAPI (Vendo mode only)
+
+```python
+async with client.events.subscribe() as stream:
+    async for event in stream:
+        print(event.kind, event.data)
+```
+
+### WebhooksAPI
+
+```python
+client.webhooks.verify(headers, body, max_age_seconds=300)  # WebhookEvent
+```
+
+### ReconcilerAPI
+
+```python
+vendo.reconciler.bootstrap(env_file, mapping)
+vendo.reconciler.start(env_file, mapping, on_change=None)   # Reconciler
+```
+
+### Errors
+
+```python
+from vendo.errors import (
+    VendoError,
+    NotConnected,
+    NeedsReauth,
+    AuthError,
+    RateLimited,
+    BalanceExhausted,
+    SpendCapExceeded,
+    UpstreamError,
+    ValidationError,
+    IdempotencyConflict,
+    VendoOnlyFeature,
+    IdentityNotPresent,
+)
+```
+
+See [Concepts: Errors](/docs/concepts/errors) for usage.
+
+### Testing utilities
+
+```python
+from vendo.testing import MockClient, MockAsyncClient, fake_connection
+```
+
+<Callout type="info">
+  The async `aio.*` shortcuts and the sync `vendo.token()` share the same in-process token cache. You can call either path interchangeably without double-fetching.
+</Callout>

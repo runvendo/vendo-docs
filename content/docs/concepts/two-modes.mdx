@@ -1,0 +1,184 @@
+---
+title: Two modes
+description: OSS / BYOK mode vs Vendo mode — what changes and when to use each.
+---
+
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+import { Callout } from "fumadocs-ui/components/callout";
+
+The SDK operates in two modes, selected automatically at startup based on whether `VENDO_API_KEY` is present in the environment.
+
+## Resolution chain for `token(slug)`
+
+```
+token("openai")
+  │
+  ├─ VENDO_TOKEN_OPENAI set?  → return it   (escape hatch, always wins)
+  │
+  ├─ VENDO_API_KEY set?       → fetch from credentials.vendo.run  (Vendo mode)
+  │
+  ├─ OPENAI_API_KEY set?      → return it   (OSS / BYOK mode)
+  │
+  └─ nothing                  → raise NotConnected("set OPENAI_API_KEY")
+```
+
+## OSS / BYOK mode
+
+No Vendo account. Set the conventional env var for each integration.
+
+<Tabs items={["Python", "TypeScript", "Swift"]}>
+  <Tab value="Python">
+    ```bash
+    # .env
+    OPENAI_API_KEY=sk-...
+    TELEGRAM_BOT_TOKEN=12345:abcde
+    ```
+
+    ```python
+    import vendo
+
+    tok = vendo.token("openai")    # returns OPENAI_API_KEY
+    bot = vendo.token("telegram")  # returns TELEGRAM_BOT_TOKEN
+
+    vendo.is_vendo_mode()          # False
+    ```
+  </Tab>
+  <Tab value="TypeScript">
+    ```bash
+    # .env
+    OPENAI_API_KEY=sk-...
+    TELEGRAM_BOT_TOKEN=12345:abcde
+    ```
+
+    ```typescript
+    import { Vendo, isVendoMode } from "@vendodev/sdk";
+
+    const vendo = new Vendo(); // no VENDO_API_KEY → OSS mode
+
+    const tok = await vendo.token("openai");    // returns OPENAI_API_KEY
+    const bot = await vendo.token("telegram");  // returns TELEGRAM_BOT_TOKEN
+
+    isVendoMode(); // false
+    ```
+  </Tab>
+  <Tab value="Swift">
+    ```bash
+    # Environment
+    OPENAI_API_KEY=sk-...
+    TELEGRAM_BOT_TOKEN=12345:abcde
+    ```
+
+    ```swift
+    import Vendo
+
+    let vendo = try Vendo(apiKey: "byok") // byok placeholder activates OSS mode
+
+    let tok = try await vendo.token("openai")    // reads OPENAI_API_KEY
+    let bot = try await vendo.token("telegram")  // reads TELEGRAM_BOT_TOKEN
+    ```
+  </Tab>
+</Tabs>
+
+## Vendo mode
+
+Set `VENDO_API_KEY` once. Everything else is the same call.
+
+<Tabs items={["Python", "TypeScript", "Swift"]}>
+  <Tab value="Python">
+    ```bash
+    VENDO_API_KEY=vendo_sk_...
+    ```
+
+    ```python
+    import vendo
+
+    tok = vendo.token("openai")        # OAuth-refreshed token from Vendo
+    bal = vendo.billing.balance()      # Vendo-only: raises VendoOnlyFeature in OSS mode
+    url = vendo.connect_url("slack")   # Vendo-only: OAuth popup URL
+
+    vendo.is_vendo_mode()              # True
+    ```
+  </Tab>
+  <Tab value="TypeScript">
+    ```bash
+    VENDO_API_KEY=vendo_sk_...
+    ```
+
+    ```typescript
+    import { Vendo, isVendoMode } from "@vendodev/sdk";
+
+    const vendo = new Vendo();
+
+    const tok = await vendo.token("openai");       // OAuth-refreshed token
+    const bal = await vendo.billing.balance();     // Vendo-only
+    const url = await vendo.connectUrl("slack");   // Vendo-only
+
+    isVendoMode(); // true
+    ```
+  </Tab>
+  <Tab value="Swift">
+    ```bash
+    VENDO_API_KEY=vendo_sk_...
+    ```
+
+    ```swift
+    import Vendo
+
+    let vendo = try Vendo() // reads VENDO_API_KEY from env
+
+    let tok = try await vendo.token("openai")       // OAuth-refreshed token
+    let bal = try await vendo.billing.balance()     // Vendo-only
+    let url = try vendo.connectURL(slug: "slack")   // Vendo-only
+    ```
+  </Tab>
+</Tabs>
+
+## Vendo-only features
+
+These surfaces throw `VendoOnlyFeature` in OSS mode:
+
+| Surface | Why |
+|---------|-----|
+| `billing.*` | Requires Vendo wallet |
+| `events.subscribe()` | Requires Vendo SSE stream |
+| `connect_url` / `connectUrl` / `connectURL` | Requires Vendo OAuth portal |
+| `for_request` / `forRequest` | Multi-tenant scoping needs a Vendo backend |
+| `for_user` / `forUser` | Same reason |
+
+`webhooks.verify()` works in both modes because HMAC verification is local.
+
+## Discover env vars
+
+<Tabs items={["Python", "TypeScript", "Swift"]}>
+  <Tab value="Python">
+    ```python
+    vendo.integrations.env_vars("slack")
+    # ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET"]
+    ```
+  </Tab>
+  <Tab value="TypeScript">
+    ```typescript
+    await vendo.integrations.envVars("slack");
+    // ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET"]
+    ```
+  </Tab>
+  <Tab value="Swift">
+    ```swift
+    let vars = vendo.integrations.envVars(for: "slack")
+    // ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET"]
+    ```
+  </Tab>
+</Tabs>
+
+<Callout type="info">
+  The BYOK catalog is bundled at SDK release time. New integrations added to Vendo after your SDK version require an upgrade to be discoverable in OSS mode.
+</Callout>
+
+## When to use which
+
+| Situation | Recommendation |
+|-----------|---------------|
+| Open-source project you want to keep portable | OSS mode — ship a `.env.example` |
+| Production SaaS or internal tool on Vendo | Vendo mode — set `VENDO_API_KEY` in your deploy env |
+| Local dev against Vendo | Vendo mode — use your personal dev API key |
+| CI / test suite | OSS mode — mock the env vars; no network calls |

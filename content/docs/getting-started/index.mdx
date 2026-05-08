@@ -1,0 +1,37 @@
+---
+title: Getting started
+description: Pick your SDK and be running in under 5 minutes.
+---
+
+import { Card, Cards } from "fumadocs-ui/components/card";
+
+All three SDKs expose the same API surface. The only difference is language idioms and install method.
+
+## Pick your language
+
+<Cards>
+  <Card
+    title="Python quickstart"
+    description="For FastAPI, Flask, Django, or any Python backend"
+    href="/docs/getting-started/python"
+  />
+  <Card
+    title="TypeScript quickstart"
+    description="For Node.js, Express, Next.js, or any JS runtime"
+    href="/docs/getting-started/typescript"
+  />
+  <Card
+    title="Swift quickstart"
+    description="For iOS, macOS, tvOS, and watchOS apps"
+    href="/docs/getting-started/swift"
+  />
+</Cards>
+
+## What you need
+
+- **OSS mode:** no account required. Just set the conventional env var for each integration (e.g. `OPENAI_API_KEY`).
+- **Vendo mode:** a `VENDO_API_KEY` from the [Vendo dashboard](https://vendo.run). Set it once and everything lights up.
+
+## Next steps
+
+After your first token call, read [Concepts: Two modes](/docs/concepts/two-modes) to understand the resolution chain, and [Concepts: Multi-tenant](/docs/concepts/multi-tenant) if you are building a SaaS product.

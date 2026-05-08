@@ -1,0 +1,129 @@
+---
+title: Multi-tenant
+description: Scope SDK calls to a specific end-user with forRequest or forUser.
+---
+
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+import { Callout } from "fumadocs-ui/components/callout";
+
+In a SaaS product each request belongs to a different user, and that user may have connected their own integrations. The SDK provides `forRequest` / `forUser` to scope all calls to a specific user's context.
+
+<Callout type="warn">
+  Multi-tenant scoping requires **Vendo mode**. Both methods throw `VendoOnlyFeature` when `VENDO_API_KEY` is not set.
+</Callout>
+
+## `forRequest(headers)` — inside a request handler
+
+The most common pattern: extract `X-Vendo-User-JWT` from the incoming request headers and return a scoped client.
+
+<Tabs items={["Python", "TypeScript", "Swift"]}>
+  <Tab value="Python">
+    Works with any Headers-like mapping (dict, Flask `request.headers`, Django `request.META`, FastAPI `Request.headers`, etc.).
+
+    ```python
+    from fastapi import FastAPI, Request
+    from vendo import Vendo
+
+    app = FastAPI()
+
+    @app.get("/api/calendar")
+    async def calendar(request: Request):
+        client = Vendo().for_request(request.headers)
+        token = client.token("google")
+        # ... use token
+        return {"token": token}
+    ```
+
+    If `X-Vendo-User-JWT` is absent, `for_request` raises `IdentityNotPresent`.
+  </Tab>
+  <Tab value="TypeScript">
+    Works with any `Headers`-like object (Node `IncomingHttpHeaders`, Fetch `Headers`, Express `req.headers`, etc.).
+
+    ```typescript
+    import express from "express";
+    import { Vendo } from "@vendodev/sdk";
+
+    const app = express();
+
+    app.get("/api/calendar", async (req, res) => {
+      const client = new Vendo().forRequest(req.headers);
+      const token = await client.token("google");
+      res.json({ token });
+    });
+    ```
+
+    If `X-Vendo-User-JWT` is absent, `forRequest` throws `IdentityNotPresent`.
+  </Tab>
+  <Tab value="Swift">
+    Pass any `[String: String]` dictionary of HTTP headers.
+
+    ```swift
+    import Vapor
+    import Vendo
+
+    func calendarHandler(_ req: Request) async throws -> Response {
+        let headers = Dictionary(
+            uniqueKeysWithValues: req.headers.map { ($0.name.description, $0.value) }
+        )
+        let client = try vendo.forRequest(headers: headers)
+        let token = try await client.token("google")
+        return Response(body: .init(string: token))
+    }
+    ```
+
+    If `X-Vendo-User-JWT` is absent, `forRequest` throws `VendoError.identityNotPresent`.
+  </Tab>
+</Tabs>
+
+## `forUser(jwt)` — background jobs and worker processes
+
+When you already have the JWT in hand (from a queue message, a background job context, etc.) rather than incoming headers:
+
+<Tabs items={["Python", "TypeScript", "Swift"]}>
+  <Tab value="Python">
+    ```python
+    from vendo import Vendo
+
+    async def process_job(user_jwt: str, job_data: dict):
+        client = Vendo().for_user(user_jwt)
+        token = client.token("openai")
+        # ... process with user's OpenAI token
+    ```
+  </Tab>
+  <Tab value="TypeScript">
+    ```typescript
+    import { Vendo } from "@vendodev/sdk";
+
+    async function processJob(userJwt: string, jobData: unknown) {
+      const client = new Vendo().forUser(userJwt);
+      const token = await client.token("openai");
+      // ... process with user's OpenAI token
+    }
+    ```
+  </Tab>
+  <Tab value="Swift">
+    ```swift
+    import Vendo
+
+    func processJob(userJwt: String, jobData: Data) async throws {
+        let client = vendo.forUser(jwt: userJwt)
+        let token = try await client.token("openai")
+        // ... process with user's OpenAI token
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## How it works
+
+Both methods return a new client that injects `X-Vendo-User-JWT: <jwt>` on every outbound request to Vendo's credentials service. The JWT tells the backend which user's connections to use.
+
+The original client is unmodified — you can call `for_request` / `forRequest` on every inbound request without creating a permanent per-user client.
+
+## Error cases
+
+| Error | When |
+|-------|------|
+| `VendoOnlyFeature` | `VENDO_API_KEY` is not set |
+| `IdentityNotPresent` | `X-Vendo-User-JWT` header is missing (from `for_request` only) |
+| `AuthError` | JWT is invalid or expired |

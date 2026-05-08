@@ -1,0 +1,102 @@
+---
+title: Python quickstart
+description: Install vendo-sdk and fetch your first token in 5 minutes.
+---
+
+## Install
+
+```bash
+pip install vendo-sdk
+# Optional: requests-based session helper
+pip install "vendo-sdk[http]"
+# Optional: async (aiohttp) support
+pip install "vendo-sdk[async]"
+```
+
+**Requirements:** Python 3.9+, stdlib only for the base install.
+
+## OSS mode (no account needed)
+
+Set the conventional env var for each integration you use:
+
+```bash
+# .env — no VENDO_API_KEY needed
+OPENAI_API_KEY=sk-...
+TELEGRAM_BOT_TOKEN=12345:abcde
+```
+
+Then call `vendo.token(slug)`:
+
+```python
+import vendo
+
+openai_key = vendo.token("openai")   # returns OPENAI_API_KEY
+bot_token = vendo.token("telegram")  # returns TELEGRAM_BOT_TOKEN
+```
+
+## Vendo mode (OAuth refresh + managed keys)
+
+Set `VENDO_API_KEY` from your [Vendo dashboard](https://vendo.run):
+
+```bash
+VENDO_API_KEY=vendo_sk_...
+```
+
+```python
+import vendo
+
+# Same call — SDK detects mode automatically
+openai_key = vendo.token("openai")
+
+# List all connected integrations for this deployment
+connections = vendo.connections.list()
+
+# Check wallet balance
+balance = vendo.billing.balance()
+print(f"{balance.credits_remaining_micros / 1_000_000:.4f} USD remaining")
+```
+
+## Bulk tokens
+
+```python
+tokens = vendo.tokens(["openai", "slack", "telegram"])
+# returns {"openai": "sk-...", "slack": "xoxb-...", "telegram": None}
+```
+
+## Pre-authed requests session
+
+Requires `pip install "vendo-sdk[http]"`. Auto-refreshes on 401:
+
+```python
+sess = vendo.session("google")
+resp = sess.get("https://www.googleapis.com/calendar/v3/calendars/primary")
+```
+
+## Async usage
+
+Requires `pip install "vendo-sdk[async]"`:
+
+```python
+import asyncio
+from vendo import AsyncVendo
+
+async def main():
+    async with AsyncVendo() as client:
+        token = await client.token("openai")
+        connections = await client.connections.list()
+
+asyncio.run(main())
+```
+
+## Check the mode
+
+```python
+vendo.is_vendo_mode()  # True if VENDO_API_KEY is set
+```
+
+## Next steps
+
+- [Concepts: Two modes](/docs/concepts/two-modes) — resolution chain explained
+- [Concepts: Multi-tenant](/docs/concepts/multi-tenant) — `for_request` and `for_user`
+- [Concepts: Errors](/docs/concepts/errors) — the 12 typed error classes
+- [SDK reference: Python](/docs/sdks/python) — full public surface

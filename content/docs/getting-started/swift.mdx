@@ -1,0 +1,83 @@
+---
+title: Swift quickstart
+description: Add the Vendo Swift package and fetch your first token in 5 minutes.
+---
+
+## Install
+
+In your `Package.swift`:
+
+```swift
+// swift-tools-version: 5.9
+import PackageDescription
+
+let package = Package(
+    name: "MyApp",
+    platforms: [.iOS(.v15), .macOS(.v12)],
+    dependencies: [
+        .package(
+            url: "https://github.com/runvendo/vendo-sdk-swift",
+            from: "1.0.0"
+        ),
+    ],
+    targets: [
+        .target(
+            name: "MyApp",
+            dependencies: ["Vendo"]
+        ),
+    ]
+)
+```
+
+**Requirements:** iOS 15+, macOS 12+, tvOS 15+, watchOS 8+, Swift 5.9+.
+
+## OSS mode (no account needed)
+
+Set the conventional env var for each integration. In Xcode schemes or your process environment:
+
+```bash
+OPENAI_API_KEY=sk-...
+TELEGRAM_BOT_TOKEN=12345:abcde
+```
+
+```swift
+import Vendo
+
+// In BYOK mode pass any non-empty string as apiKey
+let vendo = try Vendo(apiKey: "byok")
+
+let openaiKey = try await vendo.token("openai")   // reads OPENAI_API_KEY
+let botToken  = try await vendo.token("telegram") // reads TELEGRAM_BOT_TOKEN
+```
+
+## Vendo mode (OAuth refresh + managed keys)
+
+Set `VENDO_API_KEY` in the environment:
+
+```bash
+VENDO_API_KEY=vendo_sk_...
+```
+
+```swift
+import Vendo
+
+let vendo = try Vendo() // reads VENDO_API_KEY from env
+
+let openaiKey   = try await vendo.token("openai")
+let connections = try await vendo.connections.list()
+let balance     = try await vendo.billing.balance()
+```
+
+## Bulk tokens
+
+```swift
+let tokens = try await vendo.tokens(["openai", "anthropic", "slack"])
+// ["openai": "sk-...", "anthropic": "sk-ant-...", "slack": "xoxb-..."]
+```
+
+## Next steps
+
+- [Concepts: Two modes](/docs/concepts/two-modes) — resolution chain explained
+- [Concepts: Multi-tenant](/docs/concepts/multi-tenant) — `forRequest` and `forUser`
+- [Concepts: Errors](/docs/concepts/errors) — error cases
+- [SDK reference: Swift](/docs/sdks/swift) — full public surface

@@ -1,0 +1,147 @@
+---
+title: Webhooks
+description: Verify HMAC-SHA256 signatures and guard against replay attacks.
+---
+
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="info">
+  Webhook verification works in **both OSS and Vendo mode** because HMAC-SHA256 verification is performed locally — no Vendo backend call needed.
+</Callout>
+
+## Setup
+
+Set the webhook secret in your environment. You can find it in the Vendo dashboard under **Deployments → Webhooks**:
+
+```bash
+VENDO_WEBHOOK_SECRET=whsec_...
+```
+
+## Verifying a webhook
+
+<Tabs items={["Python", "TypeScript", "Swift"]}>
+  <Tab value="Python">
+    Pass the raw request headers and raw body string to `webhooks.verify()`. It raises `ValidationError` on a bad signature or a stale timestamp (older than 5 minutes by default).
+
+    ```python
+    from fastapi import FastAPI, Request, HTTPException
+    import vendo
+    from vendo.errors import ValidationError
+
+    app = FastAPI()
+
+    @app.post("/webhooks/vendo")
+    async def webhook(request: Request):
+        body = await request.body()
+        try:
+            event = vendo.webhooks.verify(
+                headers=dict(request.headers),
+                body=body.decode()
+            )
+        except ValidationError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        print(f"Event: {event.type}, ID: {event.id}")
+        return {"ok": True}
+    ```
+
+    Configure maximum age (default 300 seconds):
+
+    ```python
+    event = vendo.webhooks.verify(
+        headers=headers,
+        body=body,
+        max_age_seconds=600
+    )
+    ```
+  </Tab>
+  <Tab value="TypeScript">
+    Pass the request headers and raw body string. Throws `ValidationError` on failure.
+
+    ```typescript
+    import express from "express";
+    import { Vendo } from "@vendodev/sdk";
+
+    const app = express();
+    const vendo = new Vendo();
+
+    // IMPORTANT: use express.raw() — not express.json() — to preserve the raw body
+    app.post(
+      "/webhooks/vendo",
+      express.raw({ type: "application/json" }),
+      (req, res) => {
+        try {
+          const event = vendo.webhooks.verify(
+            req.headers as Record<string, string>,
+            req.body.toString()
+          );
+          console.log(`Event: ${event.type}, ID: ${event.id}`);
+          res.json({ ok: true });
+        } catch (e) {
+          res.status(400).json({ error: String(e) });
+        }
+      }
+    );
+    ```
+  </Tab>
+  <Tab value="Swift">
+    Use `WebhooksAPI` directly, or access it via `vendo.webhooks`. Pass headers as `[String: String]` and the raw body as a `String`.
+
+    ```swift
+    import Vendo
+    import Vapor
+
+    func webhookHandler(_ req: Request) async throws -> Response {
+        guard let body = req.body.string else {
+            throw Abort(.badRequest)
+        }
+        let headers = Dictionary(
+            uniqueKeysWithValues: req.headers.map { ($0.name.description, $0.value) }
+        )
+
+        do {
+            let event = try vendo.webhooks.verify(
+                headers: headers,
+                body: body
+            )
+            print("Event:", event.type, "ID:", event.id)
+            return Response(status: .ok)
+        } catch VendoError.validation(let message) {
+            throw Abort(.badRequest, reason: message)
+        }
+    }
+    ```
+
+    Configure max age:
+
+    ```swift
+    let event = try vendo.webhooks.verify(
+        headers: headers,
+        body: body,
+        maxAgeSeconds: 600
+    )
+    ```
+  </Tab>
+</Tabs>
+
+## Webhook event shape
+
+After a successful `verify()` call you receive a `WebhookEvent` with:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `string` | Unique event ID (use for deduplication) |
+| `type` | `string` | Event type, e.g. `connection.connected` |
+| `timestamp` | `string` | ISO 8601 timestamp |
+| `data` | `object` | Event-specific payload |
+
+## Replay protection
+
+`verify()` checks that the event timestamp is within `max_age_seconds` of the current time (default: 5 minutes). Events older than this window are rejected with `ValidationError`, making replay attacks impractical.
+
+For idempotent processing, store and check the `event.id` in your database before processing.
+
+## Signature algorithm
+
+Vendo signs webhooks with HMAC-SHA256 over the raw body and sends the signature in the `Vendo-Signature` header alongside a `Vendo-Timestamp` header. The SDK verifies both.

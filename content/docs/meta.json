@@ -1,0 +1,14 @@
+{
+  "title": "Vendo SDKs",
+  "pages": [
+    "index",
+    "---Getting started---",
+    "getting-started",
+    "---Concepts---",
+    "concepts",
+    "---Cookbook---",
+    "cookbook",
+    "---SDK Reference---",
+    "sdks"
+  ]
+}

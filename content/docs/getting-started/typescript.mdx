@@ -1,0 +1,88 @@
+---
+title: TypeScript quickstart
+description: Install @vendodev/sdk and fetch your first token in 5 minutes.
+---
+
+## Install
+
+```bash
+npm install @vendodev/sdk
+# or
+yarn add @vendodev/sdk
+# or
+pnpm add @vendodev/sdk
+```
+
+**Requirements:** Node 18+, Deno 1.40+, or any modern JS runtime. Zero runtime dependencies.
+
+## OSS mode (no account needed)
+
+Set the conventional env var for each integration:
+
+```bash
+# .env — no VENDO_API_KEY needed
+OPENAI_API_KEY=sk-...
+TELEGRAM_BOT_TOKEN=12345:abcde
+```
+
+```typescript
+import { Vendo } from "@vendodev/sdk";
+
+const vendo = new Vendo(); // reads VENDO_API_KEY from env; absent = OSS mode
+
+const openaiKey = await vendo.token("openai");   // returns OPENAI_API_KEY
+const botToken = await vendo.token("telegram");  // returns TELEGRAM_BOT_TOKEN
+```
+
+## Vendo mode (OAuth refresh + managed keys)
+
+Set `VENDO_API_KEY` from your [Vendo dashboard](https://vendo.run):
+
+```bash
+VENDO_API_KEY=vendo_sk_...
+```
+
+```typescript
+import { Vendo } from "@vendodev/sdk";
+
+const vendo = new Vendo(); // detects mode from VENDO_API_KEY automatically
+
+const openaiKey = await vendo.token("openai");
+
+// List connections
+const connections = await vendo.connections.list();
+
+// Check balance
+const balance = await vendo.billing.balance();
+```
+
+## Explicit constructor options
+
+```typescript
+const vendo = new Vendo({
+  apiKey: "vendo_sk_...",
+  baseUrl: "https://vendo.run/api",
+  apiVersion: "2026-05-02",
+});
+```
+
+## Bulk tokens
+
+```typescript
+const tokens = await vendo.tokens(["openai", "slack", "telegram"]);
+// { openai: "sk-...", slack: "xoxb-...", telegram: null }
+```
+
+## Check the mode
+
+```typescript
+import { isVendoMode } from "@vendodev/sdk";
+isVendoMode(); // true if VENDO_API_KEY is set
+```
+
+## Next steps
+
+- [Concepts: Two modes](/docs/concepts/two-modes) — resolution chain explained
+- [Concepts: Multi-tenant](/docs/concepts/multi-tenant) — `forRequest` and `forUser`
+- [Concepts: Errors](/docs/concepts/errors) — the 12 typed error classes
+- [SDK reference: TypeScript](/docs/sdks/typescript) — full public surface

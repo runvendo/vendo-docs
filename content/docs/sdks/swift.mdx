@@ -1,0 +1,147 @@
+---
+title: Swift SDK
+description: vendo-sdk-swift v1.0.0 — install, public surface, and reference links.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Package
+
+| | |
+|--|--|
+| Package | `vendo-sdk-swift` |
+| Version | `1.0.0` |
+| Source | [github.com/runvendo/vendo-sdk-swift](https://github.com/runvendo/vendo-sdk-swift) |
+| Changelog | [CHANGELOG.md](https://github.com/runvendo/vendo-sdk-swift/blob/main/CHANGELOG.md) |
+| Platforms | iOS 15+, macOS 12+, tvOS 15+, watchOS 8+ |
+| Requires | Swift 5.9+ |
+
+## Install
+
+In `Package.swift`:
+
+```swift
+.package(
+    url: "https://github.com/runvendo/vendo-sdk-swift",
+    from: "1.0.0"
+)
+```
+
+Then add `"Vendo"` to your target's dependencies.
+
+## Public surface
+
+### `Vendo` class
+
+```swift
+import Vendo
+
+// Vendo mode (reads VENDO_API_KEY from env)
+let vendo = try Vendo()
+
+// OSS/BYOK mode
+let vendo = try Vendo(apiKey: "byok")
+
+// Explicit
+let vendo = try Vendo(apiKey: "vendo_sk_...", baseURL: URL(string: "https://vendo.run/api")!)
+```
+
+### Token methods
+
+```swift
+try await vendo.token(_ slug: String) -> String
+try await vendo.tokens(_ slugs: [String]) -> [String: String?]
+```
+
+### Scoping
+
+```swift
+vendo.forRequest(headers: [String: String]) throws -> Vendo  // Vendo mode only
+vendo.forUser(jwt: String) -> Vendo                          // Vendo mode only
+```
+
+### Connect URL
+
+```swift
+try vendo.connectURL(slug: String, returnTo: String? = nil) -> URL  // Vendo mode only
+```
+
+### Sub-APIs
+
+```swift
+vendo.connections    // ConnectionsAPI
+vendo.integrations   // IntegrationsAPI
+vendo.billing        // BillingAPI (Vendo mode only)
+vendo.events         // EventsAPI (Vendo mode only)
+vendo.webhooks       // WebhooksAPI (both modes)
+```
+
+### ConnectionsAPI
+
+```swift
+try await vendo.connections.list() -> [Connection]
+try await vendo.connections.get(slug: String) -> Connection?
+```
+
+### IntegrationsAPI
+
+```swift
+try await vendo.integrations.list() -> [Integration]
+try await vendo.integrations.get(slug: String) -> Integration?
+vendo.integrations.envVars(for slug: String) -> [String]  // no network call
+```
+
+### BillingAPI (Vendo mode only)
+
+```swift
+try await vendo.billing.balance() -> Balance
+try await vendo.billing.spendCaps() -> [SpendCap]
+try await vendo.billing.usage(period: BillingPeriod) -> Usage
+```
+
+### EventsAPI (Vendo mode only)
+
+```swift
+let stream = try vendo.events.subscribe()  // AsyncThrowingStream<VendoEvent, Error>
+
+for try await event in stream {
+    print(event.type, event.data)
+}
+```
+
+### WebhooksAPI
+
+```swift
+let webhooks = WebhooksAPI(secret: "whsec_...")
+// or:
+vendo.webhooks.verify(
+    headers: [String: String],
+    body: String,
+    maxAgeSeconds: Int = 300
+) throws -> WebhookEvent
+```
+
+### VendoError enum
+
+```swift
+public enum VendoError: Error {
+    case auth(String)
+    case notConnected(String, String)
+    case needsReauth(String, String, URL?)
+    case balanceExhausted(String)
+    case spendCapExceeded(String)
+    case rateLimited(Int?)
+    case upstream(String)
+    case validation(String)
+    case idempotencyConflict(String)
+    case vendoOnlyFeature(String)
+    case identityNotPresent
+    case other(String)
+}
+```
+
+See [Concepts: Errors](/docs/concepts/errors) for usage.
+
+<Callout type="info">
+  The Swift SDK is the only one that exposes a synchronous `envVars(for:)` method on `IntegrationsAPI` — it reads from a bundled catalog and requires no network call.
+</Callout>

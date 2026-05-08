@@ -1,0 +1,122 @@
+---
+title: Events
+description: Subscribe to server-sent events for real-time connection state changes.
+---
+
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="warn">
+  Events require **Vendo mode** (`VENDO_API_KEY` must be set). `events.subscribe()` throws `VendoOnlyFeature` in OSS mode.
+</Callout>
+
+The `events` API delivers a live stream of connection-state changes over SSE. Use it to update your UI in real time or to trigger cache invalidation in your application.
+
+## Subscribing
+
+<Tabs items={["Python", "TypeScript", "Swift"]}>
+  <Tab value="Python">
+    `events.subscribe()` is an async context manager that yields event objects.
+
+    ```python
+    import asyncio
+    from vendo import AsyncVendo
+
+    async def main():
+        client = AsyncVendo()
+        async with client.events.subscribe() as stream:
+            async for event in stream:
+                print(event.kind, event.data)
+                if event.kind == "connection.connected":
+                    slug = event.data.get("slug")
+                    print(f"{slug} connected!")
+
+    asyncio.run(main())
+    ```
+
+    Stop by `break`-ing the loop or cancelling the enclosing `Task`.
+  </Tab>
+  <Tab value="TypeScript">
+    `events.subscribe()` returns an async iterable.
+
+    ```typescript
+    import { Vendo } from "@vendodev/sdk";
+
+    const vendo = new Vendo();
+
+    for await (const event of vendo.events.subscribe()) {
+      console.log(event.kind, event.data);
+      if (event.kind === "connection.connected") {
+        const { slug } = event.data;
+        console.log(`${slug} connected!`);
+      }
+    }
+    ```
+
+    Use an `AbortController` to stop cleanly:
+
+    ```typescript
+    const ac = new AbortController();
+
+    for await (const event of vendo.events.subscribe({ signal: ac.signal })) {
+      if (shouldStop) {
+        ac.abort();
+        break;
+      }
+    }
+    ```
+  </Tab>
+  <Tab value="Swift">
+    `events.subscribe()` returns an `AsyncThrowingStream`.
+
+    ```swift
+    import Vendo
+
+    let vendo = try Vendo()
+    let stream = try vendo.events.subscribe()
+
+    for try await event in stream {
+        print(event.type, event.data)
+        if event.type == "connection.connected" {
+            print("A connection was made!")
+        }
+    }
+    ```
+
+    Stop by breaking or cancelling the enclosing `Task`:
+
+    ```swift
+    let task = Task {
+        for try await event in stream {
+            // ...
+        }
+    }
+    // Later:
+    task.cancel()
+    ```
+  </Tab>
+</Tabs>
+
+## Event types
+
+| `kind` / `type` | Data fields | Description |
+|-----------------|-------------|-------------|
+| `connection.connected` | `slug`, `connection_id` | User connected an integration |
+| `connection.disconnected` | `slug`, `connection_id` | User disconnected an integration |
+| `connection.needs_reauth` | `slug`, `connection_id` | OAuth token expired, user must re-authorize |
+| `connection.error` | `slug`, `message` | Connection entered an error state |
+| `billing.balance_low` | `credits_remaining_micros` | Balance below configured threshold |
+| `billing.balance_exhausted` | — | Balance hit zero |
+| `deployment.updated` | — | Deployment settings changed |
+
+## Auto-reconnect
+
+The stream reconnects automatically with exponential backoff on transient failures:
+
+- Network drop: reconnects immediately, then backs off (1s, 2s, 4s, ... up to 60s)
+- SSE endpoint returns 5xx: same backoff
+- Three consecutive reconnect failures: the stream yields an error event and closes
+
+## Using events with the reconciler
+
+The reconciler uses `events.subscribe()` internally to invalidate the token cache and re-run the mapping immediately when connections change, instead of waiting for the 30-second poll cycle.

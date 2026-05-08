@@ -1,0 +1,200 @@
+---
+title: Errors
+description: 12 typed error classes, a mapping table, and catch examples.
+---
+
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+
+All SDK errors inherit from a common base (`VendoError` in Python/TS, `VendoError` enum in Swift). Every error carries enough context to act on it without string parsing.
+
+## Error class reference
+
+| Code | Python / TS class | Swift case | When thrown |
+|------|-------------------|------------|-------------|
+| `not_connected` | `NotConnected` | `.notConnected` | No token found for slug; env var not set |
+| `needs_reauth` | `NeedsReauth` | `.needsReauth` | Token exists but is expired or revoked; re-auth required |
+| `auth` | `AuthError` | `.auth` | `VENDO_API_KEY` is invalid or revoked |
+| `rate_limited` | `RateLimited` | `.rateLimited` | Too many requests; back off |
+| `balance_exhausted` | `BalanceExhausted` | `.balanceExhausted` | Vendo wallet is empty |
+| `spend_cap_exceeded` | `SpendCapExceeded` | `.spendCapExceeded` | Per-deployment spend cap hit |
+| `upstream` | `UpstreamError` | `.upstream` | Connected provider returned an error |
+| `validation` | `ValidationError` | `.validation` | Request payload or webhook signature invalid |
+| `idempotency_conflict` | `IdempotencyConflict` | `.idempotencyConflict` | Duplicate idempotency key with different payload |
+| `vendo_only_feature` | `VendoOnlyFeature` | `.vendoOnlyFeature` | OSS mode call hit a Vendo-only surface |
+| `identity_not_present` | `IdentityNotPresent` | `.identityNotPresent` | `forRequest` called without `X-Vendo-User-JWT` header |
+| `other` | `VendoError` | `.other` | Unexpected error; check `message` |
+
+## Catching errors
+
+<Tabs items={["Python", "TypeScript", "Swift"]}>
+  <Tab value="Python">
+    All error classes live in `vendo.errors`. They all inherit from `vendo.errors.VendoError`.
+
+    ```python
+    import vendo
+    from vendo.errors import (
+        NotConnected,
+        NeedsReauth,
+        AuthError,
+        RateLimited,
+        BalanceExhausted,
+        VendoOnlyFeature,
+        VendoError,
+    )
+
+    try:
+        tok = vendo.token("slack")
+    except NotConnected as e:
+        # Guide the user to connect
+        url = vendo.connect_url(e.slug, return_to="https://yourapp.com/after-connect")
+        print(f"Connect Slack first: {url}")
+    except NeedsReauth as e:
+        print(f"Re-authorize: {e.connect_url}")
+    except AuthError:
+        print("Invalid or revoked VENDO_API_KEY.")
+    except RateLimited as e:
+        print(f"Rate limited — retry after {e.retry_after}s")
+    except BalanceExhausted:
+        print("Wallet empty — top up at vendo.run")
+    except VendoOnlyFeature as e:
+        print(f"Not available in OSS mode: {e}")
+    except VendoError as e:
+        print(f"Unexpected SDK error [{e.code}]: {e}")
+    ```
+
+    Useful attributes on `VendoError`:
+
+    | Attribute | Type | Description |
+    |-----------|------|-------------|
+    | `code` | `str` | Snake-case error code |
+    | `status` | `int \| None` | HTTP status from Vendo API |
+    | `slug` | `str \| None` | Integration slug (`NotConnected`, `NeedsReauth`) |
+    | `connect_url` | `str \| None` | OAuth popup URL to fix the issue |
+    | `retry_after` | `float \| None` | Seconds to wait before retrying (`RateLimited`) |
+    | `message` | `str` | Human-readable description |
+  </Tab>
+  <Tab value="TypeScript">
+    All error classes are named exports from `@vendodev/sdk`.
+
+    ```typescript
+    import {
+      Vendo,
+      NotConnected,
+      NeedsReauth,
+      AuthError,
+      RateLimited,
+      BalanceExhausted,
+      VendoOnlyFeature,
+      VendoError,
+    } from "@vendodev/sdk";
+
+    const vendo = new Vendo();
+
+    try {
+      const tok = await vendo.token("slack");
+    } catch (e) {
+      if (e instanceof NotConnected) {
+        console.log("Connect first:", e.connectUrl);
+      } else if (e instanceof NeedsReauth) {
+        console.log("Re-authorize:", e.connectUrl);
+      } else if (e instanceof AuthError) {
+        console.log("Invalid VENDO_API_KEY");
+      } else if (e instanceof RateLimited) {
+        console.log(`Retry after ${e.retryAfter}s`);
+      } else if (e instanceof BalanceExhausted) {
+        console.log("Wallet empty");
+      } else if (e instanceof VendoOnlyFeature) {
+        console.log("Set VENDO_API_KEY to use this feature");
+      } else if (e instanceof VendoError) {
+        console.log(`SDK error [${e.code}]: ${e.message}`);
+      } else {
+        throw e;
+      }
+    }
+    ```
+
+    Useful properties on `VendoError`:
+
+    | Property | Type | Description |
+    |----------|------|-------------|
+    | `code` | `string` | Camel-case error code |
+    | `status` | `number \| undefined` | HTTP status |
+    | `slug` | `string \| undefined` | Integration slug |
+    | `connectUrl` | `string \| undefined` | OAuth popup URL |
+    | `retryAfter` | `number \| undefined` | Seconds to retry |
+    | `message` | `string` | Human-readable description |
+  </Tab>
+  <Tab value="Swift">
+    All errors are cases of the `VendoError` enum. Use `catch` pattern matching.
+
+    ```swift
+    import Vendo
+
+    do {
+        let token = try await vendo.token("openai")
+    } catch VendoError.notConnected(let slug, let message) {
+        print("Connect \(slug) first: \(message)")
+    } catch VendoError.needsReauth(let slug, let message, let connectURL) {
+        print("Re-authorize \(slug): \(connectURL?.absoluteString ?? "")")
+    } catch VendoError.rateLimited(let retryAfter) {
+        print("Rate limited — retry in \(retryAfter ?? 60)s")
+    } catch VendoError.balanceExhausted(let message) {
+        print("Wallet empty: \(message)")
+    } catch VendoError.vendoOnlyFeature(let message) {
+        print("Vendo-only: \(message)")
+    } catch VendoError.auth(let message) {
+        print("Auth error: \(message)")
+    } catch let e as VendoError {
+        print("SDK error: \(e.localizedDescription)")
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Testing with mocks
+
+All three SDKs provide a `MockClient` that can be configured to throw specific errors:
+
+<Tabs items={["Python", "TypeScript", "Swift"]}>
+  <Tab value="Python">
+    ```python
+    from vendo.testing import MockClient, fake_connection
+    from vendo.errors import NotConnected
+    import pytest
+
+    mock = MockClient.with_connections([
+        fake_connection(slug="slack", status="connected",
+                        credential={"access_token": "xoxb-fake"}),
+    ])
+
+    assert mock.token("slack") == "xoxb-fake"
+
+    with pytest.raises(NotConnected):
+        mock.token("missing")
+    ```
+  </Tab>
+  <Tab value="TypeScript">
+    ```typescript
+    import { MockClient, fakeConnection } from "@vendodev/sdk";
+
+    const mock = MockClient.withConnections([
+      fakeConnection({ slug: "slack", credential: { access_token: "xoxb-fake" } }),
+    ]);
+
+    expect(await mock.token("slack")).toBe("xoxb-fake");
+    await expect(mock.token("missing")).rejects.toBeInstanceOf(NotConnected);
+    ```
+  </Tab>
+  <Tab value="Swift">
+    ```swift
+    // Use environment variables pointing at vendo dev server
+    // or inject a custom URLSession mock
+    let mockToken = "fake-token"
+    setenv("VENDO_TOKEN_OPENAI", mockToken, 1)
+
+    let vendo = try Vendo(apiKey: "byok")
+    let token = try await vendo.token("openai")
+    assert(token == mockToken)
+    ```
+  </Tab>
+</Tabs>

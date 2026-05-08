@@ -1,0 +1,164 @@
+---
+title: Telegram bot
+description: Send a Telegram message with a Vendo-managed bot token in all three languages.
+---
+
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+import { Callout } from "fumadocs-ui/components/callout";
+
+This recipe shows how to send a Telegram message from your app using a bot token resolved by the Vendo SDK. The token source (OSS env var vs Vendo OAuth refresh) is invisible to your code.
+
+## Setup
+
+**OSS mode:** set `TELEGRAM_BOT_TOKEN=<your token>` in `.env`.
+
+**Vendo mode:** connect the Telegram integration in the Vendo dashboard. Set `VENDO_API_KEY`.
+
+## Sending a message
+
+<Tabs items={["Python", "TypeScript", "Swift"]}>
+  <Tab value="Python">
+    ```python
+    import vendo
+    import urllib.request
+    import json
+
+    def send_telegram_message(chat_id: str, text: str) -> dict:
+        token = vendo.token("telegram")
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = json.dumps({"chat_id": chat_id, "text": text}).encode()
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read())
+
+    result = send_telegram_message("-100123456789", "Hello from Vendo!")
+    print(result["ok"])  # True
+    ```
+
+    With the `requests` session helper (auto-refreshes on 401):
+
+    ```python
+    import vendo
+
+    sess = vendo.session("telegram")
+    resp = sess.post(
+        "https://api.telegram.org/sendMessage",
+        json={"chat_id": "-100123456789", "text": "Hello!"}
+    )
+    ```
+  </Tab>
+  <Tab value="TypeScript">
+    ```typescript
+    import { Vendo } from "@vendodev/sdk";
+
+    const vendo = new Vendo();
+
+    async function sendTelegramMessage(chatId: string, text: string) {
+      const token = await vendo.token("telegram");
+      const resp = await fetch(
+        `https://api.telegram.org/bot${token}/sendMessage`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text }),
+        }
+      );
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.description);
+      return data;
+    }
+
+    await sendTelegramMessage("-100123456789", "Hello from Vendo!");
+    ```
+  </Tab>
+  <Tab value="Swift">
+    ```swift
+    import Foundation
+    import Vendo
+
+    struct TelegramResponse: Decodable {
+        let ok: Bool
+        let description: String?
+    }
+
+    func sendTelegramMessage(
+        vendo: Vendo,
+        chatId: String,
+        text: String
+    ) async throws {
+        let token = try await vendo.token("telegram")
+        let url = URL(string: "https://api.telegram.org/bot\(token)/sendMessage")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode([
+            "chat_id": chatId,
+            "text": text
+        ])
+
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let response = try JSONDecoder().decode(TelegramResponse.self, from: data)
+        guard response.ok else {
+            throw NSError(domain: "TelegramAPI", code: 0,
+                          userInfo: [NSLocalizedDescriptionKey: response.description ?? "Unknown error"])
+        }
+    }
+
+    // Usage
+    let vendo = try Vendo()
+    try await sendTelegramMessage(vendo: vendo, chatId: "-100123456789", text: "Hello from Vendo!")
+    ```
+  </Tab>
+</Tabs>
+
+## Error handling
+
+<Tabs items={["Python", "TypeScript", "Swift"]}>
+  <Tab value="Python">
+    ```python
+    import vendo
+    from vendo.errors import NotConnected
+
+    try:
+        token = vendo.token("telegram")
+    except NotConnected as e:
+        url = vendo.connect_url("telegram", return_to="https://yourapp.com/settings")
+        print(f"Connect Telegram first: {url}")
+    ```
+  </Tab>
+  <Tab value="TypeScript">
+    ```typescript
+    import { Vendo, NotConnected } from "@vendodev/sdk";
+
+    try {
+      const token = await vendo.token("telegram");
+    } catch (e) {
+      if (e instanceof NotConnected) {
+        const url = await vendo.connectUrl("telegram", {
+          returnTo: "https://yourapp.com/settings",
+        });
+        console.log("Connect Telegram first:", url);
+      }
+    }
+    ```
+  </Tab>
+  <Tab value="Swift">
+    ```swift
+    do {
+        let token = try await vendo.token("telegram")
+    } catch VendoError.notConnected(let slug, let message) {
+        let url = try vendo.connectURL(slug: slug, returnTo: "https://yourapp.com/settings")
+        print("Connect \(slug) first: \(url)")
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Callout type="info">
+  `connect_url` / `connectUrl` / `connectURL` requires Vendo mode. In OSS mode, guide users to set the `TELEGRAM_BOT_TOKEN` env var manually.
+</Callout>

@@ -1,0 +1,151 @@
+---
+title: TypeScript SDK
+description: "@vendodev/sdk v1.0.0 — install, public surface, and reference links."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Package
+
+| | |
+|--|--|
+| Package | `@vendodev/sdk` |
+| Version | `1.0.0` |
+| npm | [npmjs.com/package/@vendodev/sdk](https://www.npmjs.com/package/@vendodev/sdk) |
+| Source | [github.com/runvendo/vendo-sdk-js](https://github.com/runvendo/vendo-sdk-js) |
+| Changelog | [CHANGELOG.md](https://github.com/runvendo/vendo-sdk-js/blob/main/CHANGELOG.md) |
+| Requires | Node 18+, Deno 1.40+ |
+
+## Install
+
+```bash
+npm install @vendodev/sdk
+```
+
+## Public surface
+
+### `Vendo` class
+
+```typescript
+import { Vendo } from "@vendodev/sdk";
+
+const vendo = new Vendo({
+  apiKey?: string,      // defaults to process.env.VENDO_API_KEY
+  baseUrl?: string,     // defaults to process.env.VENDO_BASE_URL || "https://vendo.run/api"
+  apiVersion?: string,  // defaults to "2026-05-02"
+});
+
+await vendo.token(slug: string): Promise<string>
+await vendo.tokens(slugs: string[]): Promise<Record<string, string | null>>
+await vendo.invalidate(slug: string): Promise<void>
+vendo.forRequest(headers: HeadersLike): Vendo  // Vendo mode only
+vendo.forUser(jwt: string): Vendo              // Vendo mode only
+await vendo.connectUrl(slug: string, opts?: { returnTo?: string }): Promise<string>
+
+// Sub-APIs
+vendo.connections   // ConnectionsAPI
+vendo.integrations  // IntegrationsAPI
+vendo.billing       // BillingAPI (Vendo mode only)
+vendo.events        // EventsAPI (Vendo mode only)
+vendo.webhooks      // WebhooksAPI (both modes)
+vendo.sso           // SSOAPI
+vendo.deployment    // DeploymentAPI
+```
+
+### Top-level helpers
+
+```typescript
+import { isVendoMode, connectUrl, getCredential } from "@vendodev/sdk";
+
+isVendoMode(): boolean
+connectUrl(slug, opts): string
+getCredential(slug)  // legacy 0.0.x compat
+```
+
+### ConnectionsAPI
+
+```typescript
+await vendo.connections.list(): Promise<Connection[]>
+await vendo.connections.get(slug: string): Promise<Connection | null>
+```
+
+### IntegrationsAPI
+
+```typescript
+await vendo.integrations.list(): Promise<Integration[]>
+await vendo.integrations.get(slug: string): Promise<Integration | null>
+await vendo.integrations.envVars(slug: string): Promise<string[]>
+```
+
+### BillingAPI (Vendo mode only)
+
+```typescript
+await vendo.billing.balance(): Promise<Balance>
+```
+
+### EventsAPI (Vendo mode only)
+
+```typescript
+for await (const event of vendo.events.subscribe()) { ... }
+for await (const event of vendo.events.subscribe({ signal: AbortSignal })) { ... }
+```
+
+### WebhooksAPI
+
+```typescript
+vendo.webhooks.verify(
+  headers: Record<string, string>,
+  body: string
+): WebhookEvent
+```
+
+### Reconciler (Node only)
+
+```typescript
+import { reconciler } from "@vendodev/sdk";
+
+await reconciler.start({
+  envFile: string,
+  mapping: () => Promise<Record<string, string>>,
+  onChange: "restart" | ((diff: Record<string, string>) => void),
+})
+```
+
+### Error classes
+
+```typescript
+import {
+  VendoError,
+  NotConnected,
+  NeedsReauth,
+  AuthError,
+  RateLimited,
+  BalanceExhausted,
+  SpendCapExceeded,
+  UpstreamError,
+  ValidationError,
+  IdempotencyConflict,
+  VendoOnlyFeature,
+  IdentityNotPresent,
+} from "@vendodev/sdk";
+```
+
+See [Concepts: Errors](/docs/concepts/errors) for usage.
+
+### Testing utilities
+
+```typescript
+import { MockClient, fakeConnection } from "@vendodev/sdk";
+```
+
+### Browser entry point
+
+```typescript
+import { register, VendoConnectButton, VendoConnectionCard } from "@vendodev/sdk/browser";
+```
+
+Custom elements: `<vendo-connect-button>`, `<vendo-connection-card>`.
+
+<Callout type="info">
+  The SDK is fully async-first. All methods return `Promise`. There is no sync surface in the TypeScript package.
+</Callout>
