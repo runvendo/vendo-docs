@@ -2,6 +2,15 @@
 @import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";
 
+/* Vendo brand: forest green #2B7A5E */
+:root {
+  --color-fd-primary: oklch(0.55 0.12 155);
+}
+
+.dark {
+  --color-fd-primary: oklch(0.7 0.13 155);
+}
+
 @layer base {
   body {
     @apply flex flex-col min-h-screen;

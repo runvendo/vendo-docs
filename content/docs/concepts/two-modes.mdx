@@ -179,6 +179,6 @@ These surfaces throw `VendoOnlyFeature` in OSS mode:
 | Situation | Recommendation |
 |-----------|---------------|
 | Open-source project you want to keep portable | OSS mode — ship a `.env.example` |
-| Production SaaS or internal tool on Vendo | Vendo mode — set `VENDO_API_KEY` in your deploy env |
+| Production app or internal tool deployed on Vendo | Vendo mode — set `VENDO_API_KEY` in your deploy env |
 | Local dev against Vendo | Vendo mode — use your personal dev API key |
 | CI / test suite | OSS mode — mock the env vars; no network calls |
