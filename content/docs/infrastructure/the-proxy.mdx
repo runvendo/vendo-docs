@@ -5,6 +5,8 @@ description: What `{provider}-proxy.vendo.run` does to your request, what you ca
 
 When your tool calls an LLM, TTS, or transcription provider through Vendo, the request doesn't go to `api.openai.com`. It goes to `openai-proxy.vendo.run` — a Cloudflare Worker that authenticates, meters, and forwards on your behalf. Your tool never sees the real provider API key.
 
+The proxy accepts both `Authorization: Bearer vendo_sk_***` (the OpenAI convention) and `x-api-key: vendo_sk_***` (Anthropic SDK compatibility). SDKs you already use work without modification once you swap the base URL.
+
 ## The path your request takes
 
 ```
@@ -35,32 +37,41 @@ The whole thing typically adds 10–40ms of overhead per request. Streaming resp
 
 Each provider you call gets its own subdomain:
 
-| Provider | Hostname |
-|---|---|
-| OpenAI | `openai-proxy.vendo.run` |
-| Anthropic | `anthropic-proxy.vendo.run` |
-| OpenRouter | `openrouter-proxy.vendo.run` |
-| Gemini | `gemini-proxy.vendo.run` |
-| ElevenLabs | `elevenlabs-proxy.vendo.run` |
-| AssemblyAI | `assemblyai-proxy.vendo.run` |
-| MuAPI | `muapi-proxy.vendo.run` |
-| Telegram | `telegram-proxy.vendo.run` |
+| Provider | Hostname | Notes |
+|---|---|---|
+| OpenAI | `openai-proxy.vendo.run` | Token-metered. |
+| Anthropic | `anthropic-proxy.vendo.run` | Token-metered. Accepts `x-api-key` and `Authorization`. |
+| OpenRouter | `openrouter-proxy.vendo.run` | Token-metered. Adapter prepends `/api` to paths that don't start with `/api/`, so `/v1/chat/completions` is silently rewritten to `/api/v1/chat/completions`. |
+| Gemini | `gemini-proxy.vendo.run` | Token-metered. Streaming uses `:streamGenerateContent` URL paths. |
+| ElevenLabs | `elevenlabs-proxy.vendo.run` | TTS per-character; STT per audio-hour. |
+| AssemblyAI | `assemblyai-proxy.vendo.run` | Per audio-hour; deduped by transcript id. |
+| MuAPI | `muapi-proxy.vendo.run` | Per-request flat cost per model. |
+| Telegram | `telegram-proxy.vendo.run` | Outbound bot-API forwarder. Not metered — Vendo doesn't bill Telegram traffic. |
+| Composio | `composio-proxy.vendo.run` | Meta-integration brokering ~1,000 toolkits. Per-call cost; uses Composio-managed OAuth tokens under the hood. |
 
 The path you send (`/v1/chat/completions`, `/v1/messages`, etc.) matches the upstream provider's path — the SDKs you already use work without modification once you swap the base URL.
 
 ## Status codes you'll see
 
-The proxy returns provider responses passthrough on success. It also returns its own status codes when *it* rejects the request:
+The proxy returns provider responses passthrough on success. It also returns its own status codes when *it* rejects the request. Every Vendo-originated error response carries a `Vendo-Error-Code` header with a stable machine-readable code — match on the header rather than the prose.
 
-| Status | Meaning | What to check |
+| Status | `Vendo-Error-Code` | Meaning |
 |---|---|---|
-| `401` | Missing or invalid bearer | Is your `VENDO_API_KEY` set and not revoked? |
-| `402` | Insufficient credits | Your tenant's balance is at or below zero. Top up. |
-| `403` | No active binding for this provider | The user hasn't connected the provider, or the connection was revoked. |
-| `404` | Unknown adapter | You hit a subdomain Vendo doesn't proxy. |
-| `503` | Vendo Postgres unreachable | Transient. Retry. |
+| `400` | (none) | Path-traversal guard rejected the URL (e.g. `/foo/../healthz`). |
+| `401` | `app_unknown` | Missing or unrecognized bearer. |
+| `401` | `app_revoked` | Bearer was issued but later revoked. |
+| `401` | `connection_needs_reauth` | The bound connection is in `needs_reauth` state. User must re-authorize. |
+| `402` | (none) | Insufficient credits. Tenant balance is at or below zero. Top up. |
+| `403` | `binding_missing` | No active connection bound for this provider on your app, or tenant/provider mismatch on a connection-scoped key. |
+| `403` | `connection_revoked` | The bound connection itself is revoked. |
+| `404` | (none) | Unknown adapter — you hit a subdomain Vendo doesn't proxy. |
+| `429` | `spend_cap_daily` | App key hit its daily spend cap. `Retry-After` header gives seconds until UTC midnight. |
+| `429` | `spend_cap_monthly` | App key hit its monthly spend cap. `Retry-After` gives seconds until UTC month-end. |
+| `503` | (none) | Billing service unavailable. Either Supabase is unreachable or the per-tenant Wallet Durable Object is degraded. Transient — retry. |
 
-Any `4xx` or `5xx` from the upstream is passed back to you unchanged, with the same status code and body the provider would have returned.
+Any `4xx` or `5xx` from the upstream is passed back to you unchanged, with the same status code and body the provider would have returned (without a `Vendo-Error-Code` header, so you can distinguish provider failures from proxy rejections).
+
+The proxy also responds to CORS preflights unconditionally with `Access-Control-Allow-Origin: *`, so the providers can be called from a browser.
 
 ## Free vs metered routes
 
@@ -83,8 +94,8 @@ For streaming responses (`stream: true`), the proxy reads usage from the final S
 ## What you can observe
 
 - **Your tool's logs** — the request, status code, latency. Same as calling the provider directly.
-- **`GET /api/v1/balance`** — current credit balance, with up to ~60s of KV cache lag.
-- **`GET /api/v1/usage`** — recent `usage_events` rows for your tenant.
+- **`GET /api/billing/balance`** — current credit balance (the endpoint the SDK uses; returns micros). `/api/v1/balance` is the legacy USD-shaped endpoint kept for the CLI.
+- **`GET /api/billing/usage`** — recent usage rolled up per provider.
 - **Dashboard → Billing** — historical usage by provider.
 
 You **cannot** see the real provider API key, the upstream rate limit headers (proxy doesn't relay all of them), or another tenant's calls.

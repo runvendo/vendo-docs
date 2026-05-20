@@ -40,17 +40,7 @@ This recipe shows how to send a Telegram message from your app using a bot token
     print(result["ok"])  # True
     ```
 
-    With the `requests` session helper (auto-refreshes on 401):
-
-    ```python
-    import vendo
-
-    sess = vendo.session("telegram")
-    resp = sess.post(
-        "https://api.telegram.org/sendMessage",
-        json={"chat_id": "-100123456789", "text": "Hello!"}
-    )
-    ```
+    Telegram's Bot API puts the token in the URL path rather than an `Authorization` header, so the `vendo.session` helper isn't the right fit here — `session` only injects a bearer token. Stick with `vendo.token("telegram")` and substitute the value into the URL, as above.
   </Tab>
   <Tab value="TypeScript">
     ```typescript
@@ -135,11 +125,13 @@ This recipe shows how to send a Telegram message from your app using a bot token
     ```typescript
     import { Vendo, NotConnected } from "@vendodev/sdk";
 
+    const vendo = new Vendo();
+
     try {
       const token = await vendo.token("telegram");
     } catch (e) {
       if (e instanceof NotConnected) {
-        const url = await vendo.connectUrl("telegram", {
+        const url = vendo.connectUrl("telegram", {
           returnTo: "https://yourapp.com/settings",
         });
         console.log("Connect Telegram first:", url);

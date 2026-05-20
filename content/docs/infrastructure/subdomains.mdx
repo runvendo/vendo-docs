@@ -1,41 +1,47 @@
 ---
 title: Subdomains
-description: How `{deployment}.{tenant}.vendo.run` resolves, plus custom domain support.
+description: How `{tenant}-{deployment}.vendo.run` resolves, plus custom domain support.
 ---
 
 Every Vendo deployment gets a public URL on `*.vendo.run`. The shape and lifecycle of that URL matters more than it looks — it's how routing, TLS, and per-deployment isolation all hang together.
 
 ## URL shape
 
+New deployments use a **single-level** subdomain — both slugs collapse into one DNS label:
+
 ```
-https://{deployment_slug}.{tenant_slug}.vendo.run
+https://{tenant_slug}-{deployment_slug}.vendo.run
 ```
 
-- `tenant_slug` — chosen once per tenant (workspace). Stable.
-- `deployment_slug` — chosen at deploy time, defaults to the tool slug (e.g. `twenty`, `hermes`). Editable later.
+- `tenant_slug` — chosen once per tenant (workspace). Stable. May contain hyphens (`acme-corp`).
+- `deployment_slug` — chosen at deploy time, defaults to the tool slug stripped of any non-alphanumeric characters (e.g. `twenty`, `hermes`). Editable later. Deployment slugs are `[a-z0-9]+` only; no hyphens, so the single-hyphen delimiter between the two slugs is unambiguous.
 
-Both slugs are validated against a reserved list (you can't pick `api`, `proxy`, `vendo`, `www`, etc.) and against the pattern `*-proxy` (which is reserved for Vendo's provider proxies).
+Older deployments still serve from the **legacy two-level** form (`{deployment_slug}.{tenant_slug}.vendo.run`) via per-hostname Cloudflare Worker Custom Domains. Both shapes route through the same app-proxy worker; the rename helper preserves whichever format a deployment already lives on.
+
+Both slugs are validated against a reserved list (you can't pick `api`, `proxy`, `vendo`, `www`, etc.) and against the pattern `*-proxy` (which is reserved for Vendo's provider proxies). Combined `{tenant}-{deployment}` length is capped at 63 characters (the DNS label limit).
 
 ## What happens on a request
 
 ```
 Browser
-  │  GET https://crm.acme.vendo.run/contacts
+  │  GET https://acme-crm.vendo.run/contacts
   ▼
 Cloudflare DNS  ─►  *.vendo.run wildcard
   │
   ▼
 App-proxy Worker
-  │  reads KV: deploy:crm.acme
+  │  reads KV: deploy:acme-crm
   │  → { target, vendoAuth, tenantId, status }
   │
   ▼
 Your backend (Railway / Workers)
 ```
 
-The app-proxy is a single Cloudflare Worker (`vendo-app-proxy`) that handles every `*.vendo.run` deployment URL. It looks up routing in KV, enforces auth if you opted in, and reverse-proxies to your real backend.
+The app-proxy is a single Cloudflare Worker (`vendo-app-proxy`) that handles every `*.vendo.run` deployment URL via the wildcard Worker Route `*.vendo.run/*`. It looks up routing in KV, enforces auth if you opted in, and reverse-proxies to your real backend.
 
 If the deployment is suspended, resuming, or otherwise not `running`, the proxy serves a status page instead of forwarding. This is why your URL never returns a confusing 404 mid-suspension.
+
+The app-proxy also strips Cloudflare's edge headers (`CF-Connecting-IP`, `CF-IPCountry`, `CF-Ray`, `CF-Visitor`) and the `Host` header before forwarding. See [Runtime targets](/docs/infrastructure/runtime-targets) for what that means for client-IP visibility.
 
 ## Renaming a deployment
 
@@ -53,8 +59,8 @@ If your tool emits absolute URLs (in emails, webhooks, OAuth callbacks), it must
 
 You don't manage certs. Two regimes coexist:
 
-- **Two-level URLs** (`crm.acme.vendo.run`) — Cloudflare provisions an Advanced certificate per hostname when the deployment is created. Universal SSL doesn't cover two-level subdomains. Provisioning takes 1–10 minutes during the first deploy.
-- **Single-level URLs** (`acme--crm.vendo.run`) — covered by free Universal SSL on `*.vendo.run`. New deployments increasingly land on this format.
+- **Single-level URLs** (`acme-crm.vendo.run`) — covered by free Universal SSL on `*.vendo.run`. Default for new deployments. No per-hostname certificate provisioning step. Lifts the per-zone 100-Custom-Domain cap permanently.
+- **Two-level URLs** (`crm.acme.vendo.run`, legacy) — Cloudflare provisions an Advanced certificate per hostname via a Worker Custom Domain. Universal SSL doesn't cover two-level subdomains. Provisioning took 1–10 minutes during the first deploy. Each Custom Domain consumes 1/100 of the zone's hard cap.
 
 Both serve the same backend; the app-proxy handles them identically.
 

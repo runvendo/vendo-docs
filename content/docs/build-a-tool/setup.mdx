@@ -20,7 +20,7 @@ my-tool/
 
 Only `vendo.yaml` is special to Vendo. Everything else is whatever your language and framework expect. Downloadable and npm tools drop the `Dockerfile` and add a release/build pipeline appropriate to the platform (PyInstaller, Tauri, `npm publish`, etc.) — see [Tool types](#tool-types) below.
 
-The slug in the directory name doesn't matter to Vendo. What matters is `name:` in `vendo.yaml` — it becomes the catalog slug, the URL segment, the KV key, and the template filename. Pick it once: lowercase, hyphens, 2–63 chars, matching `[a-z][a-z0-9-]{1,62}[a-z0-9]`. You can't rename it later without a data migration.
+The slug in the directory name doesn't matter to Vendo. What matters is `name:` in `vendo.yaml` — it becomes the catalog slug, the URL segment, the KV key, and the template filename. Pick it once: lowercase, hyphens, 3–64 chars, matching `[a-z][a-z0-9-]{1,62}[a-z0-9]`. You can't rename it later without a data migration.
 
 ## Minimum vendo.yaml
 
@@ -38,7 +38,7 @@ name: my-tool
 version: 1
 runtime: python
 integrations:
-  - provider: openrouter
+  - openrouter
 env:
   required:
     - DATABASE_URL
@@ -52,7 +52,7 @@ Every field is optional except `name` and `version`. Add what your tool actually
 
 Vendo ships SDKs for three languages. Pick the one your tool is written in:
 
-- **Python** — `vendo_sdk` on PyPI. Most existing tools (Hermes, Demo CRM, voicebox). FastAPI / Flask / Django all work.
+- **Python** — `vendo-sdk` on PyPI (import name: `vendo_sdk`). Most existing tools (Hermes, Demo CRM, voicebox). FastAPI / Flask / Django all work.
 - **TypeScript** — `@vendodev/sdk` on npm. Best for Next.js, Hono, or Express tools that want a single language end-to-end.
 - **Swift** — `vendo-sdk-swift` for macOS / iOS clients. Used by downloadable desktop tools (openscreen, cap).
 
@@ -64,7 +64,7 @@ You don't declare your language anywhere in `vendo.yaml`. The `runtime:` field i
 
 Vendo runs three kinds of tools. The type is set at the catalog level, not in `vendo.yaml`, but it dictates what you're shipping:
 
-- **`deployment`** — server-side. Vendo provisions a Railway project per tenant, gives each instance a `{deployment-slug}.{tenant-slug}.vendo.run` subdomain, and runs your container image. Most CRM-, automation-, and bot-style tools are deployments.
+- **`deployment`** — server-side. Vendo provisions a Railway project per tenant, gives each instance a `{deployment-slug}.vendo.run` subdomain, and runs your container image. Most CRM-, automation-, and bot-style tools are deployments.
 - **`downloadable`** — a desktop binary. Vendo hosts the artifact at `downloads.vendo.run/{slug}/`, detects the user's OS, and serves the right build. Use this for tools that need local hardware access (microphone, filesystem, GPU).
 - **`npm`** — a CLI installed via `npm install -g`. The dashboard shows the tenant the install + login commands and polls `/api/cli/apps` until the CLI authenticates.
 

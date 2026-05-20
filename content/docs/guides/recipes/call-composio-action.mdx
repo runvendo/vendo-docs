@@ -3,9 +3,11 @@ title: Call a Composio Action
 description: Run any Composio action against the tenant's connected accounts via vendo.data.execute.
 ---
 
-`vendo.data.execute` runs any Composio action against the tenant's connected accounts. The proxy resolves the connected account, calls Composio, bills via the `composio.action_call` meter, and returns the result.
+`vendo.data.execute(action, args)` runs any Composio action against the tenant's connected accounts. The proxy resolves the connected account, calls Composio, bills via the `composio.action_call` meter, and returns the result.
 
-Vendo mode only. Throws `VendoOnlyFeature` in OSS mode.
+Vendo mode only. Throws `VendoOnlyFeature` in OSS mode. The Composio adapter lives on its own subdomain (`composio-proxy.vendo.run`, registered in `proxy/src/adapters/index.ts`) — the SDK targets it directly.
+
+> The action's toolkit must have a connection bound on this deployment with the `composio_managed` profile. Connections bound through a non-Composio path (e.g. `oauth_app_install` for Notion) don't satisfy `data.execute` — the proxy will return `binding_missing` and the SDK raises `NotConnected`.
 
 ---
 
@@ -13,20 +15,23 @@ Vendo mode only. Throws `VendoOnlyFeature` in OSS mode.
 
 ```python
 import vendo
+from vendo import Vendo
 from vendo.errors import NotConnected, UpstreamError
 
-def send_slack_message(client, channel: str, text: str):
+client = Vendo()
+
+def send_gmail(to: str, subject: str, body: str):
     try:
         return client.data.execute(
-            "SLACK_SENDS_A_MESSAGE",
-            {"channel": channel, "text": text},
+            "GMAIL_SEND_EMAIL",
+            {"recipient_email": to, "subject": subject, "body": body},
         )
     except NotConnected as e:
-        # User hasn't connected Slack — point them at the connect URL.
-        slug = e.slug or "slack"
+        # User hasn't connected Gmail — point them at the connect URL.
+        slug = e.slug or "gmail"
         return {"needs_connection": slug, "connect_url": vendo.connect_url(slug)}
     except UpstreamError as e:
-        # Composio or Slack returned an error
+        # Composio or Gmail returned an error
         return {"error": str(e)}
 ```
 
@@ -35,12 +40,16 @@ import { Vendo, NotConnected, UpstreamError } from "@vendodev/sdk";
 
 const vendo = new Vendo();
 
-async function sendSlackMessage(channel: string, text: string) {
+async function sendGmail(to: string, subject: string, body: string) {
   try {
-    return await vendo.data.execute("SLACK_SENDS_A_MESSAGE", { channel, text });
+    return await vendo.data.execute("GMAIL_SEND_EMAIL", {
+      recipient_email: to,
+      subject,
+      body,
+    });
   } catch (e) {
     if (e instanceof NotConnected) {
-      const slug = e.slug ?? "slack";
+      const slug = e.slug ?? "gmail";
       return {
         needsConnection: slug,
         connectUrl: vendo.connectUrl(slug),
@@ -58,32 +67,32 @@ async function sendSlackMessage(channel: string, text: string) {
 
 ## How the proxy resolves the connected account
 
-When you call `data.execute("SLACK_SENDS_A_MESSAGE", args)`:
+When you call `data.execute("GMAIL_SEND_EMAIL", args)`:
 
-1. The proxy receives the request with your `VENDO_API_KEY` bearer token.
-2. It resolves the action name to a Composio toolkit (e.g. `SLACK_*` maps to the Slack toolkit).
-3. It looks up the connected account for the toolkit on your deployment's binding.
+1. The SDK POSTs to `https://composio-proxy.vendo.run/v1/execute` with your `VENDO_API_KEY` bearer token, body `{action_id, args}`.
+2. The proxy resolves the action name to a Composio toolkit (e.g. `GMAIL_*` maps to the Gmail toolkit).
+3. It looks up the `composio_managed` connection for the toolkit on your deployment's binding.
 4. It calls Composio with the resolved account and your `args`.
 5. Billing ticks one `composio.action_call` unit.
-6. The Composio response is returned as-is.
+6. The proxy wraps the Composio response as `{"data": ...}`; the SDK unwraps so callers receive the inner payload directly.
 
-If the toolkit's provider is not connected, the proxy returns `binding_missing` and the SDK raises `NotConnected`.
+If the toolkit has no `composio_managed` connection on this deployment, the proxy returns HTTP 403 with `{"error": "binding_missing", "toolkit": "<slug>"}` and the SDK raises `NotConnected`.
 
 ---
 
 ## Finding action names
 
-Action names follow the pattern `<PROVIDER>_<ACTION_DESCRIPTION>` in SCREAMING_SNAKE_CASE. Examples:
+Action names follow the pattern `<TOOLKIT>_<ACTION>` in SCREAMING_SNAKE_CASE, matching Composio's catalog. Examples:
 
-| Provider | Action name |
+| Toolkit | Sample action |
 |---|---|
-| Slack | `SLACK_SENDS_A_MESSAGE` |
-| Notion | `NOTION_CREATE_PAGE` |
 | Gmail | `GMAIL_SEND_EMAIL` |
 | Supabase | `SUPABASE_BETA_RUN_SQL_QUERY` |
 | GitHub | `GITHUB_CREATE_AN_ISSUE` |
+| Notion | `NOTION_CREATE_PAGE` |
+| Linear | `LINEAR_CREATE_ISSUE` |
 
-Find the full list at [composio.dev](https://composio.dev) or by browsing the Composio toolkit registry.
+The full, authoritative list lives at [composio.dev](https://composio.dev) — browse by toolkit and copy the action id verbatim. Composio occasionally renames actions; if you start seeing `composio_error` 4xx responses after an upgrade, re-check the action id against the live catalog. The proxy is a pass-through — Vendo doesn't curate the action catalog.
 
 ---
 

@@ -1,113 +1,51 @@
 ---
-title: Request scoping
-description: forRequest and forUser — per-user identity in advanced Vendo deployments.
+title: Multi-tenant
+description: How Vendo isolates tenants at the database, network, and binding layers.
 ---
 
-import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 import { Callout } from "fumadocs-ui/components/callout";
 
-<Callout type="warn">
-  Request scoping requires **Vendo mode** (`VENDO_API_KEY` must be set). Both methods throw `VendoOnlyFeature` in OSS mode.
+Vendo is a multi-tenant platform: many independent tenants run their own copies of the same tool side-by-side on the same infrastructure. This page covers the boundaries Vendo enforces so a tool author can rely on them.
+
+The short version: a tenant's connections, deployments, and credentials cannot leak across tenants — that's enforced at the Postgres layer, at the proxy, and at the DNS layer.
+
+## Boundary 1 — Database (RLS)
+
+The core tenant-scoped tables (`tenants`, `deployments`, `deploy_logs`, `connections`, `app_connection_bindings`) all have Row-Level Security enabled. Each policy reads the caller's tenant id from the JWT `app_metadata` claim and rejects any row whose `tenant_id` doesn't match.
+
+The only role that can cross the boundary is `service_role`, used by Vendo's own API routes after they've already verified ownership via the user-context RLS-gated read. Tool code runs through the SDK against the proxy and the deployments API — it never speaks Postgres directly, so RLS is the floor.
+
+For app/binding pairs there's an additional belt-and-braces check: the `enforce_binding_tenant_match` trigger on `app_connection_bindings` raises if the bound app's tenant id doesn't equal the bound connection's tenant id. Even a `service_role` insert with mismatched ids gets refused.
+
+## Boundary 2 — Connections are per-tenant
+
+A connection (the row that holds a tenant's credential for one integration) is owned by exactly one tenant via `connections.tenant_id` with `ON DELETE CASCADE` to `tenants(id)`. Deleting a tenant wipes their connections; no orphan rows.
+
+The follow-on rule: bindings (`app_connection_bindings`) glue a connection to an app. The trigger above forbids a binding from spanning two tenants. So even if a tool author accidentally tries to bind connection X to app Y across the tenant line, Postgres refuses.
+
+## Boundary 3 — Subdomain isolation
+
+Every running deployment gets its own subdomain on `vendo.run`. Two formats coexist:
+
+- **Single-level** (the format for all new deployments): `{tenant_slug}-{deployment_slug}.vendo.run`. The two slugs collapse into one DNS label, covered by free Universal SSL on `*.vendo.run`.
+- **Two-level** (legacy): `{deployment_slug}.{tenant_slug}.vendo.run`. Existing deployments keep this format on rename via `selectFormatForRename` so customer-embedded URLs don't silently break.
+
+A partial unique index on `deployments.subdomain` (where `status != 'destroyed'`) prevents collisions across tenants. A `(tenant_a, deploy_z)` rename that would render to an already-taken `{tenant}-{deploy}` surfaces a 409 from `/api/deploy` instead of stealing traffic.
+
+The app-proxy at the edge routes by `Host`, so requests for `tenant-a-prod.vendo.run` only reach tenant A's container — even if tenant B has a deployment named `prod`.
+
+## Boundary 4 — Proxy authentication
+
+Each deployment gets a `vendo_sk_*` bearer that is scoped to one (tenant, app) pair. The proxy hashes the bearer, looks it up in KV, and reads `tenantId` and `appId` from the lookup result. From that point on every binding resolution, every spend-cap check, and every usage write happens under that single `tenantId`.
+
+If a tool somehow leaked its `vendo_sk_*` to another tenant, the leaked key would still only be able to consume the *origin* tenant's balance and reach the *origin* tenant's bound connections — never the leak recipient's. The blast radius is bounded by tenant.
+
+## What this means for tool authors
+
+You do not need to write tenant checks in your tool. The SDK reads the deployment's bound connections from `/api/deployments/me/connections`, and that endpoint already filters by the calling app key's tenant. Any provider token you get back is, by construction, owned by the same tenant as the deployment you're running in.
+
+The one place you should be aware of cross-tenant rules is if you build a tool that runs OAuth flows on behalf of end users (i.e. `forRequest` / `forUser` — see [Request scoping](/docs/concepts/request-scoping)). User-scoped tokens are still tenant-scoped: a user identified by `X-Vendo-User-JWT` can only resolve to connections inside the same tenant as the calling app key.
+
+<Callout type="info">
+  RLS, the binding-tenant trigger, the subdomain unique index, and the proxy KV lookup are independent layers — any one of them on its own would prevent cross-tenant access. Together they form Vendo's "defence in depth" tenant boundary.
 </Callout>
-
-When the Vendo proxy forwards a request to your deployment it can attach an `X-Vendo-User-JWT` header identifying the end user. `forRequest` / `forUser` clone the SDK client with that identity, so all subsequent token lookups resolve against that user's connections rather than the deployment-level ones.
-
-This is a low-level mechanism for advanced Vendo deployments. Most apps do not need it.
-
-## `forRequest(headers)` — inside a request handler
-
-<Tabs items={["Python", "TypeScript", "Swift"]}>
-  <Tab value="Python">
-    ```python
-    from fastapi import FastAPI, Request
-    from vendo import Vendo
-
-    app = FastAPI()
-
-    @app.get("/api/calendar")
-    async def calendar(request: Request):
-        client = Vendo().for_request(request.headers)
-        token = client.token("google")
-        return {"token": token}
-    ```
-
-    Raises `IdentityNotPresent` if `X-Vendo-User-JWT` is absent.
-  </Tab>
-  <Tab value="TypeScript">
-    ```typescript
-    import express from "express";
-    import { Vendo } from "@vendodev/sdk";
-
-    const app = express();
-
-    app.get("/api/calendar", async (req, res) => {
-      const client = new Vendo().forRequest(req.headers);
-      const token = await client.token("google");
-      res.json({ token });
-    });
-    ```
-
-    Throws `IdentityNotPresent` if `X-Vendo-User-JWT` is absent.
-  </Tab>
-  <Tab value="Swift">
-    ```swift
-    import Vapor
-    import Vendo
-
-    func calendarHandler(_ req: Request) async throws -> Response {
-        let headers = Dictionary(
-            uniqueKeysWithValues: req.headers.map { ($0.name.description, $0.value) }
-        )
-        let client = try vendo.forRequest(headers: headers)
-        let token = try await client.token("google")
-        return Response(body: .init(string: token))
-    }
-    ```
-
-    Throws `VendoError.identityNotPresent` if `X-Vendo-User-JWT` is absent.
-  </Tab>
-</Tabs>
-
-## `forUser(jwt)` — background jobs
-
-When you already have the JWT in hand (from a queue message, background job context, etc.):
-
-<Tabs items={["Python", "TypeScript", "Swift"]}>
-  <Tab value="Python">
-    ```python
-    from vendo import Vendo
-
-    async def process_job(user_jwt: str):
-        client = Vendo().for_user(user_jwt)
-        token = client.token("openai")
-    ```
-  </Tab>
-  <Tab value="TypeScript">
-    ```typescript
-    import { Vendo } from "@vendodev/sdk";
-
-    async function processJob(userJwt: string) {
-      const client = new Vendo().forUser(userJwt);
-      const token = await client.token("openai");
-    }
-    ```
-  </Tab>
-  <Tab value="Swift">
-    ```swift
-    import Vendo
-
-    func processJob(userJwt: String) async throws {
-        let client = vendo.forUser(jwt: userJwt)
-        let token = try await client.token("openai")
-    }
-    ```
-  </Tab>
-</Tabs>
-
-## Error reference
-
-| Error | When |
-|-------|------|
-| `VendoOnlyFeature` | `VENDO_API_KEY` is not set |
-| `IdentityNotPresent` | `X-Vendo-User-JWT` header is missing (from `forRequest` only) |
-| `AuthError` | JWT is invalid or expired |

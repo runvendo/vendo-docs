@@ -14,7 +14,7 @@ The good news: the SDK hides almost all of this. You'll write one `vendo.token("
 ## What you'll need
 
 - A tool already running on Vendo (private deploy is fine — follow [Telegram bot from scratch](/docs/guides/tutorials/telegram-bot-from-scratch) or [Ship a CRM tool to the catalog](/docs/guides/tutorials/ship-a-crm-tool-to-the-catalog) first if you're starting from zero).
-- A Vendo account with the integration you want to add already enabled in the platform — check **Settings → Connections** in the dashboard. Notion, Google Drive, Slack, Linear, Stripe, GitHub, and ~15 other Composio-brokered providers are wired today. If the provider doesn't exist yet, the runtime SDK can't call it; [open an issue](https://github.com/runvendo/vendo/issues/new) describing the auth model and what the tool needs.
+- A Vendo account with the integration you want to add already enabled in the platform — check the **Connections** page in the dashboard sidebar (`/connections`). Notion, Google Drive, Slack, Linear, Stripe, GitHub, and ~15 other Composio-brokered providers are wired today. If the provider doesn't exist yet, the runtime SDK can't call it; [open an issue](https://github.com/runvendo/vendo/issues/new) describing the auth model and what the tool needs.
 - Local Python or TypeScript dev set up — you already used this in the earlier tutorials.
 
 This tutorial uses Notion as the worked example because it shows every moving part: OAuth dance, token refresh, and a real API call. Substitute any OAuth integration name and the same pattern applies.
@@ -214,7 +214,7 @@ You should see your Notion databases listed (or an empty array, if the integrati
 
 Now do the same call against Vendo's managed credentials. Two changes:
 
-1. **Set `VENDO_API_KEY`** in your local env. Use a personal `vendo_sk_*` from the dashboard's **Settings → API Keys** page — that's your own developer key, fine to use locally.
+1. **Set `VENDO_API_KEY`** in your local env. Use a personal `vendo_sk_*` from the dashboard — under **Apps → \<your app\> → API keys** in `web/src/app/(dashboard)/apps/[id]`. That's your own developer key, fine to use locally.
 2. **Unset `NOTION_TOKEN`.** Leaving it set would shadow the Vendo lookup because of the resolution chain's escape hatch.
 
 ```bash
@@ -243,7 +243,7 @@ npx tsx -e "import { Vendo } from '@vendodev/sdk'; import { listNotionDatabases 
 
 If you haven't run the Notion OAuth dance yet from your Vendo account, you'll see `NotConnected: notion`. That's the SDK telling you the binding doesn't exist yet. Two ways to fix it:
 
-- **From the dashboard.** Open **Settings → Connections**, click **Connect** next to Notion, and complete the OAuth popup. Re-run the script; it now succeeds.
+- **From the dashboard.** Open the **Connections** page (`/connections`), click **Connect** next to Notion, and complete the OAuth popup. Re-run the script; it now succeeds.
 - **From your tool's UX.** Catch `NotConnected` and surface a connect button. That's the next step.
 
 </Step>
@@ -343,9 +343,9 @@ if (data.needs_connection) {
 }
 ```
 
-Once the user finishes OAuth, the popup closes itself. Vendo emits a `connection.connected` webhook to your deployment; your handler calls `vendo.invalidate("notion")` to clear the in-process token cache, and the next call to `list_notion_databases_safe` succeeds.
+Once the user finishes OAuth, the popup closes itself. Vendo emits a `connection.connected` event on the SDK's SSE stream; your subscriber (see step 10) calls `vendo.invalidate("notion")` to clear the in-process token cache, and the next call to `list_notion_databases_safe` succeeds.
 
-The Webhook side of this loop is the [Verify a Webhook recipe](/docs/guides/recipes/verify-webhook); the equivalent JSON contract for `data.execute`-style code paths is in [Handle NotConnected](/docs/guides/recipes/handle-not-connected). `NeedsReauth` is the same shape but raised when an existing connection's token was revoked upstream — the user has to redo OAuth from scratch.
+The event-stream side of this loop is on the [Verify a Webhook recipe](/docs/guides/recipes/verify-webhook#consuming-lifecycle-events-over-sse); the equivalent JSON contract for `data.execute`-style code paths is in [Handle NotConnected](/docs/guides/recipes/handle-not-connected). `NeedsReauth` is the same shape but raised when an existing connection's token was revoked upstream — the user has to redo OAuth from scratch.
 
 <Callout type="info">
 `connect_url` works only in Vendo mode. Calling it in OSS mode raises `VendoOnlyFeature`. In OSS mode, surface a "set `NOTION_TOKEN` in your env" instruction instead of a connect URL.
@@ -410,7 +410,7 @@ The full deploy-wizard experience for a tenant who has never connected Notion:
 
 1. They click **Deploy** on your catalog listing.
 2. The Configure step renders the integrations group, including "Connect Notion" with the brand logo and a primary button.
-3. They click **Connect**. A popup opens at `https://vendo.run/api/oauth/notion/start` (or `composio` for Composio-brokered providers), then to Notion's hosted OAuth page where they pick the workspaces they want to share and click **Allow**.
+3. They click **Connect**. A popup opens at `https://vendo.run/connections/connect/notion?app_key=<your-app-key>` (the same URL `vendo.connect_url("notion")` returns), then redirects to Notion's hosted OAuth page where they pick the workspaces they want to share and click **Allow**.
 4. Notion redirects to Vendo's callback. Vendo encrypts the access token (and refresh token, if returned), inserts a `connections` row with `profile=oauth_app_install` (or `composio_managed`), and the popup closes.
 5. The dashboard's wizard advances. The deploy worker writes the `app_connection_bindings` row tying the new connection to the deployment, resolves `connectionEnvVars` for `notion` (`NOTION_TOKEN`), and writes it into `deployment_env_vars` as `kind='integration'`.
 6. The deploy continues. Your container boots with `NOTION_TOKEN` set.
@@ -432,66 +432,59 @@ If the deploy gets stuck at the integrations step, the usual suspects are:
 Tenants can swap their Notion connection from the dashboard's connections page after deploy. The platform handles this for you with two mechanisms:
 
 - **Env-var update.** The bind API runs the same resolver as deploy time and upserts new `deployment_env_vars` rows. The dashboard surfaces a "Restart to apply" banner so the tenant can pick the moment to recycle the container.
-- **Webhook signal.** Vendo emits `connection.disconnected` and then `connection.connected` events. Your webhook handler should call `vendo.invalidate(slug)` to clear the SDK's in-process token cache so the next read pulls the fresh credential without waiting for a restart.
+- **SSE signal.** Vendo emits `connection.disconnected` and then `connection.connected` events on the SDK's events stream (`GET /api/deployments/me/events`). Subscribe with `events.subscribe()` and call `vendo.invalidate(slug)` to clear the SDK's in-process token cache so the next read pulls the fresh credential without waiting for a restart.
 
-A minimal webhook handler that does both:
+A minimal subscriber that does both:
 
 <Tabs items={["Python", "TypeScript"]}>
 <Tab value="Python">
 
 ```python
-import vendo
-from vendo.errors import ValidationError
+import threading
+from vendo import Vendo
 
-def handle_vendo_webhook(headers: dict, body: bytes) -> dict:
-    try:
-        event = vendo.webhooks.verify(headers, body)
-    except ValidationError:
-        return {"status": 400, "error": "invalid signature"}
+client = Vendo()
 
-    if event.type in ("connection.connected", "connection.disconnected"):
-        slug = event.data.get("slug")
+
+def watch_connection_events():
+    for msg in client.events.subscribe():
+        if msg.type not in ("connection.connected", "connection.disconnected"):
+            continue
+        slug = msg.data.get("slug") if isinstance(msg.data, dict) else None
         if isinstance(slug, str):
-            vendo.invalidate(slug)
+            client.invalidate(slug)
 
-    return {"status": 200, "ok": True}
+
+# Run alongside your main request handler.
+threading.Thread(target=watch_connection_events, daemon=True).start()
 ```
 
 </Tab>
 <Tab value="TypeScript">
 
 ```typescript
-import { Vendo, ValidationError } from "@vendodev/sdk";
+import { Vendo } from "@vendodev/sdk";
 
 const vendo = new Vendo();
 
-export async function POST(request: Request) {
-  const rawBody = await request.text();
-  const headers = Object.fromEntries(request.headers.entries());
-
-  let event;
-  try {
-    event = vendo.webhooks.verify(headers, rawBody);
-  } catch (e) {
-    if (e instanceof ValidationError) {
-      return Response.json({ error: "invalid signature" }, { status: 400 });
+// Start once at boot. The async iterator reconnects on transient errors.
+(async () => {
+  for await (const msg of vendo.events.subscribe()) {
+    if (msg.type !== "connection.connected" && msg.type !== "connection.disconnected") {
+      continue;
     }
-    throw e;
-  }
-
-  if (event.type === "connection.connected" || event.type === "connection.disconnected") {
-    const slug = event.data["slug"];
+    const slug = (msg.data as { slug?: string } | null)?.slug;
     if (typeof slug === "string") vendo.invalidate(slug);
   }
-
-  return Response.json({ ok: true });
-}
+})();
 ```
 
 </Tab>
 </Tabs>
 
 `vendo.invalidate(slug)` is local — no network call — and works in both modes. In OSS mode it's effectively a no-op because the SDK reads env vars on every call and doesn't cache. In Vendo mode it clears the cached `credentials.vendo.run` response so the next `token()` re-fetches from scratch.
+
+`events.subscribe()` is Vendo-mode-only — it raises `VendoOnlyFeature` in OSS. The full event-kind list is on the [Verify a Webhook recipe](/docs/guides/recipes/verify-webhook#event-kinds-on-the-sse-stream).
 
 </Step>
 
@@ -521,7 +514,7 @@ A tool that talks to Notion (or any OAuth provider Vendo brokers) with one decla
 From here:
 
 - **More than one OAuth provider.** Stack them. `integrations:` is a list; add a line per provider and one `vendo.token(slug)` call per place you use them. The wizard auto-groups them into a single Connect step (or split them across steps with [`wizardLayout`](/docs/deploy-and-publish/publish-to-catalog/wizard-layout)).
-- **Webhooks from the provider.** Some integrations (Telegram, Stripe) deliver inbound updates Vendo routes through `hooks.vendo.run`. Different shape — covered separately in [Webhooks](/docs/concepts/webhooks) and the [Verify a webhook recipe](/docs/guides/recipes/verify-webhook).
+- **Webhooks from the provider.** Some integrations (Telegram, Stripe) deliver inbound updates that Vendo verifies — Telegram via deploy-hook `setWebhook` straight to your container; others through `hooks.vendo.run`. Covered in the [Telegram tutorial](/docs/guides/tutorials/telegram-bot-from-scratch) and the [Verify a webhook recipe](/docs/guides/recipes/verify-webhook).
 - **A provider Vendo doesn't broker yet.** File an integration request with the auth model and env var requirements. Most providers can be added in a day.
 
 For day-to-day operations of the deployed tool — viewing logs, debugging failed deploys, suspending — start at [Operate](/docs/deploy-and-publish/operate).

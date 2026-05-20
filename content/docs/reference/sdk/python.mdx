@@ -1,6 +1,6 @@
 ---
 title: Python SDK
-description: vendo-sdk v1.0.0 — install, public surface, and reference links.
+description: vendo-sdk v1.2.0 — install, public surface, and reference links.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -10,11 +10,11 @@ import { Callout } from "fumadocs-ui/components/callout";
 | | |
 |--|--|
 | Package | `vendo-sdk` |
-| Version | `1.0.0` |
+| Version | `1.2.0` |
 | PyPI | [pypi.org/project/vendo-sdk](https://pypi.org/project/vendo-sdk) |
 | Source | [github.com/runvendo/vendo-sdk-py](https://github.com/runvendo/vendo-sdk-py) |
 | Changelog | [CHANGELOG.md](https://github.com/runvendo/vendo-sdk-py/blob/main/CHANGELOG.md) |
-| Requires | Python 3.9+ |
+| Requires | Python 3.11+ |
 
 ## Install
 
@@ -38,7 +38,7 @@ import vendo
 vendo.token(slug)                        # str — fetch single token
 vendo.tokens(slugs)                      # dict[str, str | None]
 vendo.session(slug)                      # requests.Session (requires [http])
-vendo.connect_url(slug, return_to=None)  # str (Vendo mode only)
+vendo.connect_url(slug, *, return_to=None, state=None)  # str (Vendo mode only)
 vendo.is_vendo_mode()                    # bool
 ```
 
@@ -51,22 +51,40 @@ client = Vendo(api_key=None, base_url=None)
 client.token(slug)
 client.tokens(slugs)
 client.session(slug)
-client.connect_url(slug, return_to=None)
+client.connect_url(slug, *, return_to=None, state=None)
 client.invalidate(slug)
 
 # Scoping
 client.for_request(headers)  # → Vendo (Vendo mode only)
 client.for_user(jwt)         # → Vendo (Vendo mode only)
 
-# Sub-APIs
+# Sub-APIs (instance attributes)
 client.connections           # ConnectionsAPI
 client.integrations          # IntegrationsAPI
 client.billing               # BillingAPI (Vendo mode only)
 client.events                # EventsAPI (Vendo mode only)
 client.webhooks              # WebhooksAPI (works in both modes)
-client.sso                   # SSOAPI
-client.deployment            # DeploymentAPI
-client.reconciler            # ReconcilerAPI
+client.data                  # DataAPI — Composio proxy (Vendo mode only)
+```
+
+### Module-level helpers (not instance attributes)
+
+`vendo.sso`, `vendo.deployment`, and `vendo.reconciler` live as module-level
+submodules. They are **not** attributes on the `Vendo` class — call them via the
+top-level `vendo` namespace.
+
+```python
+import vendo
+
+vendo.sso.is_enabled()
+vendo.sso.identity_from_headers(headers)        # VendoIdentity | None
+
+vendo.deployment.tenant_id()                    # str | None
+vendo.deployment.deployment_id()                # str | None
+vendo.deployment.is_running_on_vendo()          # bool — checks VENDO_DEPLOYMENT_ID
+
+vendo.reconciler.bootstrap(env_file=..., mapping=...)
+vendo.reconciler.start(env_file=..., mapping=..., on_change="restart")
 ```
 
 ### Async client
@@ -98,34 +116,61 @@ client.connections.get(slug)       # Connection | None
 ```python
 client.integrations.list()         # list[Integration]
 client.integrations.get(slug)      # Integration | None
-client.integrations.env_vars(slug) # list[str]
+client.integrations.env_vars(slug) # list[str] — BYOK env-var names
 ```
 
 ### BillingAPI (Vendo mode only)
 
 ```python
 client.billing.balance()           # Balance
+client.billing.spend_caps()        # SpendCaps
+client.billing.usage(period="month")  # dict
 ```
 
 ### EventsAPI (Vendo mode only)
 
+`subscribe()` returns a synchronous `Iterator[EventStreamMessage]` — iterate with a
+plain `for` loop. The async client's `aio.*` namespace does not implement
+`subscribe`.
+
 ```python
-async with client.events.subscribe() as stream:
-    async for event in stream:
-        print(event.kind, event.data)
+for event in client.events.subscribe():
+    print(event.type, event.data)
 ```
 
 ### WebhooksAPI
 
 ```python
-client.webhooks.verify(headers, body, max_age_seconds=300)  # WebhookEvent
+# Constructor — pass secret + max_age_sec here.
+hooks = WebhooksAPI(secret="whsec_...", max_age_sec=300)
+event = hooks.verify(headers, body)  # body: str → WebhookEvent
+
+# Or via the client (uses VENDO_WEBHOOK_SECRET from env):
+client.webhooks.verify(headers, body)
 ```
 
-### ReconcilerAPI
+### DataAPI (Vendo mode only)
 
 ```python
-vendo.reconciler.bootstrap(env_file, mapping)
-vendo.reconciler.start(env_file, mapping, on_change=None)   # Reconciler
+client.data.execute("SLACK_SEND_MESSAGE", {"channel": "#general", "text": "hi"})
+```
+
+Posts to `https://composio-proxy.vendo.run/v1/execute`.
+
+### Reconciler (module-only)
+
+```python
+import vendo
+
+# mapping is a callable returning {VAR_NAME: value}.
+vendo.reconciler.bootstrap(env_file="/app/.env", mapping=lambda: {"X": "1"})
+
+# on_change defaults to "restart"; accepts "reload-hook" or a callable.
+reconciler = vendo.reconciler.start(
+    env_file="/app/.env",
+    mapping=lambda: {"X": "1"},
+    on_change="restart",
+)
 ```
 
 ### Errors

@@ -10,10 +10,13 @@ Query the tenant's Supabase `auth.users` table from inside a deployed tool. The 
 ## Get the Supabase ref and run a query
 
 ```python
-import vendo_sdk as vendo
+import vendo
+from vendo import Vendo
+
+client = Vendo()
 
 def get_user_count():
-    conn = vendo.connections.get("supabase")
+    conn = client.connections.get("supabase")
 
     # Not connected — tell the frontend to connect first
     if conn is None:
@@ -26,7 +29,7 @@ def get_user_count():
 
     ref = conn.context["ref"]  # e.g. "vqxkddreoeebocpisgrn"
 
-    result = vendo.data.execute(
+    result = client.data.execute(
         "SUPABASE_BETA_RUN_SQL_QUERY",
         {
             "project_id": ref,
@@ -87,11 +90,11 @@ async function getUserCount() {
 If you call `data.execute` directly without checking `connections.get` first, and Supabase isn't connected, the proxy returns `binding_missing` and the SDK raises `NotConnected`. Catch it:
 
 ```python
-from vendo_sdk.errors import NotConnected
+from vendo.errors import NotConnected
 
 def query_supabase(ref: str, sql: str):
     try:
-        return vendo.data.execute(
+        return client.data.execute(
             "SUPABASE_BETA_RUN_SQL_QUERY",
             {"project_id": ref, "query": sql},
         )

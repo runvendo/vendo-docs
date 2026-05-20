@@ -1,7 +1,9 @@
 ---
 title: vendo login
-description: Authorize the CLI against your Vendo account via a browser PKCE flow.
+description: Authorize the CLI against your Vendo account via a one-shot loopback browser bootstrap.
 ---
+
+import { Callout } from "fumadocs-ui/components/callout";
 
 ## Synopsis
 
@@ -9,7 +11,9 @@ description: Authorize the CLI against your Vendo account via a browser PKCE flo
 vendo login [--force] [--api-base <url>]
 ```
 
-Opens your browser to complete the Vendo OAuth-style PKCE flow, then stores a long-lived API key at `~/.vendo/config.json` (mode `0600`). Subsequent CLI commands use that credential.
+Opens your browser to a Vendo consent page, which issues a long-lived `vendo_sk_*` key and POSTs it to a one-shot loopback HTTP listener on your machine. The CLI stores the result at `~/.vendo/config.json` (mode `0600`). Subsequent CLI commands use that credential.
+
+If a credential is already cached, `vendo login` is a no-op and returns the existing config without opening a browser. Pass `--force` to re-issue.
 
 ## Flags
 
@@ -20,11 +24,20 @@ Opens your browser to complete the Vendo OAuth-style PKCE flow, then stores a lo
 
 ## Output
 
+Before the redirect, the CLI prints two lines on stdout:
+
+```
+Opening https://vendo.run/dev/cli-bootstrap?cb=http://127.0.0.1:<port>/done&mode=personal-key in your browser…
+Click "Issue API key" to continue.
+```
+
 On success:
 
 ```
 ✓ Logged in as you@example.com (tenant t_abc).
 ```
+
+If the email is not in the bootstrap payload, the line falls back to `✓ Logged in as (unknown email) (tenant t_abc).`
 
 ## Examples
 
@@ -46,6 +59,23 @@ Log into a non-production Vendo instance:
 vendo login --api-base https://staging.vendo.run
 ```
 
+## How the flow works
+
+There is no PKCE, no code exchange, and no third-party OAuth handshake. The browser page itself is responsible for issuing the key — the CLI is just a loopback receiver.
+
+1. The CLI binds an HTTP listener on a random port at `http://127.0.0.1:<port>/done` and starts a 5-minute timer.
+2. The CLI opens `${apiBase}/dev/cli-bootstrap?cb=http://127.0.0.1:<port>/done&mode=personal-key` in the user's default browser.
+3. The page checks the caller is signed in and is a Vendo admin; if not, it redirects to the dashboard.
+4. The user clicks **Issue dev API key**. The page calls `POST /api/dev/personal-key` server-side to mint a fresh `vendo_sk_*` key bound to the user's `Vendo Dev (CLI)` project app (any previous CLI key is revoked).
+5. The page POSTs the resulting `{ apiKey, tenantId, appId, email, issuedAt, ... }` JSON to the loopback `cb` URL. The loopback handler answers the CORS preflight from `apiBase`.
+6. The CLI writes the payload to `~/.vendo/config.json` and exits.
+
+Timeout: if no callback arrives within **5 minutes**, the CLI rejects with `Login timed out after 5 minutes` and exits non-zero.
+
+<Callout type="info">
+  The page lives under `/dev/cli-bootstrap` and currently requires the signed-in user to be a Vendo admin. Non-admins are redirected to `/dashboard`.
+</Callout>
+
 ## What it writes
 
 `~/.vendo/config.json` containing:
@@ -55,12 +85,13 @@ vendo login --api-base https://staging.vendo.run
   "apiBase": "https://vendo.run",
   "apiKey": "vendo_sk_…",
   "tenantId": "t_…",
+  "appId": "app_…",
   "issuedToEmail": "you@example.com",
   "issuedAt": "2026-05-20T12:00:00Z"
 }
 ```
 
-The file is created with mode `0600`. The key is a real `vendo_sk_*` proxy key with App Key scope, usable for any endpoint that accepts CLI-issued bearer tokens.
+The directory `~/.vendo` is created with mode `0700`; the file is written and re-`chmod`'d to `0600`. The location is `${HOME}/.vendo/config.json` — overriding `$HOME` relocates the file. The key is a real `vendo_sk_*` proxy key with App Key scope, usable for any endpoint that accepts CLI-issued bearer tokens.
 
 ## Related
 

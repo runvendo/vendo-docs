@@ -33,13 +33,15 @@ Vendo does not enforce semver — but the rollout tooling assumes it. If you shi
 
 | Column | Where it comes from | Editable by hand |
 |---|---|---|
-| `tool_slug` | Migration | Never (FK to `apps_catalog.slug`) |
-| `version` | Migration | Once, during release |
-| `status` | Migration | Per release cut |
-| `vendo_manifest` | Migration (copy of manifest JSON) | Never (refreshed by sync action) |
+| `tool_id` | Migration | Never (UUID FK to `apps_catalog.id`) |
+| `version` | Migration, then overwritten by sync | Once at insert; sync overwrites |
+| `template_version` | Sync action (mirrors `version`) | Never |
+| `status` | Migration | Per release cut (`active` / `inactive`) |
 | `wizard_inputs` | Sync action (extracted from `userInputs[]`) | Never |
 | `wizard_layout` | Sync action (extracted from `wizardLayout`) | Never |
 | `requires` | Sync action (extracted from `integrations[]`) | Never |
+
+The FK is `tool_id` (UUID) → `apps_catalog.id`, set in the release migration via `SELECT id FROM apps_catalog WHERE slug = '...'`. The old `tool_slug` column was dropped in migration 024.
 
 The `requires` column keeps the legacy name from when integrations were called "requires" — the data is your `integrations[]` array, copied verbatim by the sync action.
 
@@ -49,9 +51,10 @@ A common pattern in release migrations is to copy fields forward from the previo
 
 ```sql
 -- DON'T DO THIS
-INSERT INTO tool_releases (tool_slug, version, status, requires)
-SELECT 'my-tool', '1.0.5', 'active', COALESCE(tr.requires, prev.requires)
-FROM ...;
+INSERT INTO tool_releases (tool_id, version, status, requires)
+SELECT t.id, '1.0.5', 'active', COALESCE(tr.requires, prev.requires)
+FROM apps_catalog t, tool_releases prev
+WHERE t.slug = 'my-tool' AND prev.tool_id = t.id;
 ```
 
 `COALESCE` is null-aware, not empty-aware. If your new manifest has `"integrations": []`, the column is **`[]::jsonb`**, not `NULL`. `COALESCE([]::jsonb, prev.requires)` returns `[]::jsonb` — and your release ships with no integration bindings.
@@ -63,16 +66,13 @@ Every new deploy on a release with empty `requires` ships without integration en
 Pattern that works:
 
 ```sql
-INSERT INTO tool_releases (tool_slug, version, status, requires)
-VALUES (
-  'my-tool',
-  '1.0.5',
-  'active',
-  '[{"provider": "telegram"}]'::jsonb
-);
+INSERT INTO tool_releases (tool_id, version, status, requires)
+SELECT t.id, '1.0.5', 'active', '[{"provider": "telegram", "profile": "webhook_inbound", "cardinality": "per_deployment"}]'::jsonb
+FROM apps_catalog t
+WHERE t.slug = 'my-tool';
 ```
 
-…or fetch it from the manifest JSON in the migration, but always source the array from the new version, never from the old one.
+…or fetch it from the manifest JSON in the migration, but always source the array from the new version, never from the old one. The sync action will overwrite this with the manifest's `integrations[]` on its next run — the explicit value here is just to ensure correctness if the sync hasn't run yet.
 
 ## Pinning behavior
 
@@ -91,7 +91,7 @@ This is intentional — it means a tenant's experience is stable across your rel
 ```sql
 SELECT version, status, created_at
 FROM tool_releases
-WHERE tool_slug = 'my-tool'
+WHERE tool_id = (SELECT id FROM apps_catalog WHERE slug = 'my-tool')
 ORDER BY created_at DESC;
 ```
 

@@ -1,6 +1,6 @@
 ---
 title: TypeScript SDK
-description: "@vendodev/sdk v1.0.0 — install, public surface, and reference links."
+description: "@vendodev/sdk v1.4.0 — install, public surface, and reference links."
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -10,7 +10,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 | | |
 |--|--|
 | Package | `@vendodev/sdk` |
-| Version | `1.0.0` |
+| Version | `1.4.0` |
 | npm | [npmjs.com/package/@vendodev/sdk](https://www.npmjs.com/package/@vendodev/sdk) |
 | Source | [github.com/runvendo/vendo-sdk-js](https://github.com/runvendo/vendo-sdk-js) |
 | Changelog | [CHANGELOG.md](https://github.com/runvendo/vendo-sdk-js/blob/main/CHANGELOG.md) |
@@ -31,31 +31,55 @@ import { Vendo } from "@vendodev/sdk";
 
 const vendo = new Vendo({
   apiKey?: string,      // defaults to process.env.VENDO_API_KEY
-  baseUrl?: string,     // defaults to process.env.VENDO_BASE_URL || "https://vendo.run/api"
+  baseUrl?: string,     // defaults to process.env.VENDO_BASE_URL || "https://vendo.run"
   apiVersion?: string,  // defaults to "2026-05-02"
 });
 
 await vendo.token(slug: string): Promise<string>
 await vendo.tokens(slugs: string[]): Promise<Record<string, string | null>>
-await vendo.invalidate(slug: string): Promise<void>
-vendo.forRequest(headers: HeadersLike): Vendo  // Vendo mode only
-vendo.forUser(jwt: string): Vendo              // Vendo mode only
-await vendo.connectUrl(slug: string, opts?: { returnTo?: string }): Promise<string>
+vendo.invalidate(slug: string): void
+vendo.forRequest(headers: Headers | Record<string, string>): Vendo  // Vendo mode only
+vendo.forUser(jwt: string): Vendo                                   // Vendo mode only
+vendo.connectUrl(slug: string, opts?: { returnTo?: string; state?: string }): string
 
-// Sub-APIs
+// Sub-APIs (readonly instance properties)
 vendo.connections   // ConnectionsAPI
 vendo.integrations  // IntegrationsAPI
 vendo.billing       // BillingAPI (Vendo mode only)
 vendo.events        // EventsAPI (Vendo mode only)
 vendo.webhooks      // WebhooksAPI (both modes)
-vendo.sso           // SSOAPI
-vendo.deployment    // DeploymentAPI
+vendo.data          // DataAPI — Composio proxy (Vendo mode only)
+```
+
+The constructor throws `AuthError` if `VENDO_API_KEY` is not in env and
+`apiKey` is not passed.
+
+### Reconciler subpath module
+
+The reconciler is **not** a property on the `Vendo` class. Import it from
+the dedicated subpath:
+
+```typescript
+import * as reconciler from "@vendodev/sdk/reconciler";
+
+// mapping is a callable; on_change defaults to no-op when omitted.
+await reconciler.bootstrap({
+  envFile: "/app/.env",
+  mapping: async () => ({ X: "1" }),
+});
+
+const r = await reconciler.start({
+  envFile: "/app/.env",
+  mapping: async () => ({ X: "1" }),
+  onChange: "restart",   // | "reload-hook" | (diff) => void
+});
+r.stop();
 ```
 
 ### Top-level helpers
 
 ```typescript
-import { isVendoMode, connectUrl, getCredential } from "@vendodev/sdk";
+import { isVendoMode, connectUrl, getCredential, HttpAdapter, DEFAULT_RETRY } from "@vendodev/sdk";
 
 isVendoMode(): boolean
 connectUrl(slug, opts): string
@@ -81,9 +105,14 @@ await vendo.integrations.envVars(slug: string): Promise<string[]>
 
 ```typescript
 await vendo.billing.balance(): Promise<Balance>
+await vendo.billing.spendCaps(): Promise<SpendCaps>
+await vendo.billing.usage(opts?: { period?: "day" | "month" }): Promise<unknown>
 ```
 
 ### EventsAPI (Vendo mode only)
+
+`subscribe()` returns an `AsyncIterable<EventStreamMessage>`. Reconnects with
+exponential backoff (capped at 30 s by default).
 
 ```typescript
 for await (const event of vendo.events.subscribe()) { ... }
@@ -93,23 +122,19 @@ for await (const event of vendo.events.subscribe({ signal: AbortSignal })) { ...
 ### WebhooksAPI
 
 ```typescript
-vendo.webhooks.verify(
-  headers: Record<string, string>,
-  body: string
-): WebhookEvent
+import { WebhooksAPI } from "@vendodev/sdk";
+
+const hooks = new WebhooksAPI({ secret: "whsec_...", maxAgeSec: 300 });
+const event: WebhookEvent = hooks.verify(headers, body);  // body: string
 ```
 
-### Reconciler (Node only)
+### DataAPI (Vendo mode only)
 
 ```typescript
-import { reconciler } from "@vendodev/sdk";
-
-await reconciler.start({
-  envFile: string,
-  mapping: () => Promise<Record<string, string>>,
-  onChange: "restart" | ((diff: Record<string, string>) => void),
-})
+await vendo.data.execute("SLACK_SEND_MESSAGE", { channel: "#general", text: "hi" });
 ```
+
+Posts to `https://composio-proxy.vendo.run/v1/execute`.
 
 ### Error classes
 
@@ -147,5 +172,6 @@ import { register, VendoConnectButton, VendoConnectionCard } from "@vendodev/sdk
 Custom elements: `<vendo-connect-button>`, `<vendo-connection-card>`.
 
 <Callout type="info">
-  The SDK is fully async-first. All methods return `Promise`. There is no sync surface in the TypeScript package.
+  Every request method is async and returns a `Promise`. The exception is
+  `invalidate(slug)`, which is a synchronous cache eviction.
 </Callout>

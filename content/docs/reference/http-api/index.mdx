@@ -1,11 +1,11 @@
 ---
 title: HTTP API
-description: The Vendo HTTP API surface at vendo.run/api — what the SDKs and CLI call under the hood.
+description: The Vendo HTTP API surface at vendo.run/api — what the SDKs, CLI, and dashboard call under the hood.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The Vendo SDKs and CLI talk to the platform over the HTTP API documented in this section. You usually don't call these endpoints directly — the [Python](/docs/reference/sdk/python) and [TypeScript](/docs/reference/sdk/typescript) SDKs wrap them — but they're worth knowing for debugging, building thin clients, or writing in a language without a first-party SDK yet.
+The Vendo SDKs, CLI, and dashboard all talk to the platform over the HTTP API documented in this section. You usually don't call these endpoints directly — the [Python](/docs/reference/sdk/python) and [TypeScript](/docs/reference/sdk/typescript) SDKs wrap the SDK-facing surface — but they're worth knowing for debugging, building thin clients, scripting deploys, or writing in a language without a first-party SDK.
 
 ## Base URL
 
@@ -13,7 +13,11 @@ The Vendo SDKs and CLI talk to the platform over the HTTP API documented in this
 https://vendo.run
 ```
 
-All endpoints documented here are rooted at that origin. The `/api/v1/*` prefix is the canonical, CORS-enabled, tenant-scoped surface. Other paths (`/api/deployments/me/*`, `/api/cli/*`) target specific callers and may not allow cross-origin browser access.
+All endpoints documented here are rooted at that origin. Three top-level surface groupings:
+
+- `/api/v1/*` — the legacy CORS-enabled tenant surface. Today only `/api/v1/balance` lives here.
+- `/api/deployments/me/*` — runtime-facing endpoints called by deployed tools using their App Key. `connections`, `events`.
+- Everything else (`/api/billing/*`, `/api/connections/*`, `/api/integrations/*`, `/api/apps/*`, `/api/tools/*`, `/api/tenants/*`, `/api/keys`, `/api/oauth/*`, `/api/deploy`) — dashboard surface, authenticated by the `vendo.run` session cookie, with the SDK accepting App Keys on a subset (e.g. `/api/billing/balance`).
 
 ## Auth model
 
@@ -26,57 +30,106 @@ Vendo accepts four distinct credentials, with strict rules about which endpoints
 | **Identity token** (JWT) | `Authorization: Bearer …` | Supabase OAuth at `auth.vendo.run` | User identity, 1 hour |
 | **Session cookie** | Browser cookies | `vendo.run` sign-in flow | Dashboard user |
 
-Format detection on Bearer tokens is dot-segment count: a JWT has exactly three dot-separated base64url segments; opaque `vendo_sk_*` keys never do.
+Two different format-detection strategies live in the codebase:
+
+- `/api/v1/balance` and `/api/billing/balance` use **dot-segment counting**: a token with exactly three base64url segments is treated as a JWT; anything else is looked up as an opaque proxy key.
+- `/api/deployments/me/connections` and `/api/deployments/me/events` hard-check `token.startsWith("vendo_sk_")`. Anything else — including a valid identity JWT — is rejected before any verification work happens.
 
 ### Endpoint auth matrix
 
 | Endpoint | App Key | Connection Key | Identity JWT | Session cookie |
 |---|---|---|---|---|
 | `GET /api/v1/balance` | yes | yes | yes | no |
+| `GET /api/billing/balance` | yes | yes | yes | no |
 | `GET /api/deployments/me/connections` | yes | no | no | no |
 | `GET /api/deployments/me/events` | yes | no | no | no |
 | `GET /api/cli/balance` | yes | yes | no | no |
-| `POST /api/cli/exchange` | exchanges PKCE code | n/a | no | no |
-| `POST /api/cli/authorize`, `GET /api/cli/keys`, `GET /api/cli/apps`, `POST /api/cli/revoke`, `POST /api/cli/ssh/{deployment}` | no | no | no | yes |
 | `POST /api/deploy` | no | no | no | yes |
+| `POST /api/connections` (cookie) | yes | no | no | yes |
+| `GET /api/billing/*` (dashboard) | no | no | no | yes |
+| `GET /api/integrations`, `/api/apps`, `/api/keys`, `/api/tenants/me`, `/api/user/me` | no | no | no | yes |
+| `GET /api/tools/*`, `/api/pricing/*` (public catalog) | n/a | n/a | n/a | optional |
 | `GET /api/auth/me` | no | no | no | yes (or anonymous) |
 
 <Callout type="warn">
   `/api/deployments/me/*` only accepts an **App Key**. Connection-scoped keys are rejected even though they share the same `vendo_sk_*` prefix — these endpoints need an `app_id` to resolve bindings.
 </Callout>
 
-## Errors
+## Error envelopes
 
-Errors return a JSON body with an `error` object:
+Vendo currently emits **three distinct error shapes** across its surface. New code uses the canonical helper (`web/src/lib/errors/response.ts`), but legacy routes ship their own shapes. Check each endpoint's `Errors` section for the exact body it returns.
+
+### Shape 1 — canonical (`errorResponse()`)
+
+Used by every route that imports `@/lib/errors/response`. Sets a `Vendo-Error-Code` HTTP header and emits:
+
+```json
+{
+  "error": {
+    "code": "rate_limit_sse_streams",
+    "message": "Too many concurrent SSE streams."
+  }
+}
+```
+
+Optional fields (`slug`, `retry_after`, `connect_url`, `suggested_fix`) appear inside `error` when the route passes them. The canonical code registry lives at `web/src/lib/errors/codes.ts`. Today only `/api/deployments/me/events` (rate-limit branch) uses this helper.
+
+### Shape 2 — nested without code
+
+Used by `/api/v1/balance`, `/api/billing/balance`, and `/api/deployments/me/connections`:
 
 ```json
 { "error": { "message": "Missing Bearer token" } }
 ```
 
-Common status codes:
+### Shape 3 — flat (no wrapper)
+
+Used by `/api/deploy`, `/api/cli/balance`, and most of the dashboard surface:
+
+```json
+{ "message": "Rate limit exceeded" }
+```
+
+Deploy and a few dashboard routes add a `code` field next to `message`:
+
+```json
+{ "message": "Add credits to your wallet before deploying.", "code": "INSUFFICIENT_CREDITS" }
+```
+
+A handful of dashboard mutations use a third variant with a single `error` string property:
+
+```json
+{ "error": "unauthorized" }
+```
+
+### Common status codes
 
 | Status | Meaning |
 |---|---|
-| `401` | Missing, malformed, revoked, or expired Bearer token |
-| `402` | Tenant out of credits (only on metered provider proxy routes) |
-| `403` | Authenticated but not permitted (e.g. App Key has no binding for the requested provider) |
-| `404` | Resource not found |
-| `409` | Conflict (e.g. duplicate deployment slug) |
+| `400` | Validation failure or unknown integration slug |
+| `401` | Missing, malformed, revoked, or expired Bearer token / no session |
+| `402` | Tenant billing gate (`BILLING_NOT_SETUP`, `INSUFFICIENT_CREDITS`) or out of credits on a metered call |
+| `403` | Authenticated but not permitted (App Key has no binding for the requested provider, tenant ownership mismatch, tool unreleased) |
+| `404` | Resource or tenant not found |
+| `409` | Conflict (duplicate deployment slug, duplicate workspace slug, exclusive connection bound elsewhere, idempotency conflict) |
 | `429` | Rate limit exceeded |
+| `502` | Upstream (deploy-worker, provider API, OAuth exchange) failed |
 | `5xx` | Vendo bug — please report |
 
 ## CORS
 
-`/api/v1/*` reflects `*.vendo.run` origins with `Vary: Origin`; other origins get `*`. Allowed methods: `GET, OPTIONS`. Allowed headers: `Authorization, Content-Type`. Safe because every endpoint requires a Bearer token.
+`/api/v1/balance` and `/api/billing/balance` reflect `*.vendo.run` origins with `Vary: Origin`; other origins get `*`. Allowed methods: `GET, OPTIONS`. Allowed headers: `Authorization, Content-Type`. Safe because every endpoint requires a Bearer token.
 
-Other surfaces (`/api/deployments/me/*`, `/api/cli/*`) do not enable cross-origin browser access — call them from your server or via the SDK.
+Other surfaces (`/api/deployments/me/*`, `/api/deploy`, the dashboard endpoints) do not enable cross-origin browser access — call them from your server or via the SDK.
 
 ## Conventions
 
-- **JSON only.** Requests and responses are `application/json` except SSE channels.
+- **JSON only.** Requests and responses are `application/json` except SSE channels, image uploads (multipart `formData`), and HTML postMessage responses (OAuth callbacks).
 - **Timestamps** are ISO 8601 with `Z` suffix unless otherwise noted.
-- **Money** is USD with two-decimal precision unless documented as `micros` (USD × 10⁶, integer).
+- **Money** is reported as USD (`number`, two-decimal precision) on legacy routes (`/api/v1/balance`, `/api/cli/balance`, dashboard charts) and as integer **micros** (USD × 10⁶) on SDK-facing routes (`/api/billing/balance`, `/api/billing/spend-caps`). Field names tell you which: `*_usd` vs `*_micros`.
+- **Field naming.** `/api/v1/*` and `/api/deployments/me/*` responses use snake_case. `/api/deploy`, `/api/auth/me`, and a number of dashboard mutations use camelCase. Cross-language SDK consumers will see both — Vendo is gradually standardizing on snake_case but never breaks an existing field.
 - **Single-shot, not polled.** Connection state changes surface to a deployment when it restarts and re-reads, or via the [events](events) SSE channel.
+- **Idempotency.** `POST /api/deploy` honors `Idempotency-Key` request header — repeated calls with the same key replay the cached response.
 
 ## Rate limits
 
@@ -85,7 +138,11 @@ Per-IP limiters apply to a handful of public endpoints:
 | Endpoint | Limit |
 |---|---|
 | `GET /api/v1/balance` | 60 req/min |
+| `GET /api/billing/balance` | 60 req/min |
 | `GET /api/cli/balance` | 30 req/min |
+| `POST /api/deploy` | 5 req/hour |
+| `POST /api/integrations/{slug}` and `/api/integrations/{slug}/regenerate` | shared `integrationLimiter` |
+| `GET /api/deployments/me/events` | max 5 concurrent streams per app (advisory) |
 
 Other endpoints rely on key-level revocation and proxy-level spend caps.
 

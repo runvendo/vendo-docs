@@ -13,7 +13,8 @@ Catalog manifests live in a dedicated repo: [`runvendo/vendo-templates`](https:/
 vendo-templates/
 ├── README.md
 ├── .github/workflows/
-│   └── publish-to-r2.yml
+│   ├── sync.yml
+│   └── upstream-tracker.yml
 └── <slug>/
     ├── 1.0.0.json
     ├── 1.0.1.json
@@ -22,27 +23,33 @@ vendo-templates/
 
 One directory per tool, named exactly the same as the tool's `apps_catalog.slug`. One JSON file per version, named `{semver}.json`. That's the entire convention.
 
-## How the publish action works
+## How the sync action works
 
-On every push to `main`, a GitHub Action:
+On every push to `main`, [`.github/workflows/sync.yml`](https://github.com/runvendo/vendo-templates/blob/main/.github/workflows/sync.yml) runs two jobs in sequence: a **validate** job (also runs on PR) followed by a **sync** job (push-to-main + manual `workflow_dispatch` only).
 
-1. **Validates** each manifest against [`manifest.schema.json`](https://github.com/runvendo/vendo/blob/main/cloudflare/deploy-worker/src/schema/manifest.schema.json). Invalid JSON or schema violations fail the action — the manifest never reaches R2.
-2. **Uploads** each `{slug}/{version}.json` to the `vendo-templates` R2 bucket at the same path.
-3. **Exposes** the file to the deploy worker, which fetches `templates/{slug}/{version}.json` at deploy time.
+1. **Validate.** `npm run validate` parses every `{slug}/{version}.json` against the local Zod schema in [`vendo-templates/src/schema.ts`](https://github.com/runvendo/vendo-templates/blob/main/src/schema.ts). The Zod schema is intentionally stricter than the deploy worker's [`manifest.schema.json`](https://github.com/runvendo/vendo/blob/main/cloudflare/deploy-worker/src/schema/manifest.schema.json) — for example, every `integrations[]` entry must declare `profile` and `cardinality`. A submission that passes the deploy-worker schema can still fail Zod here.
+2. **Sync to R2.** `npm run sync:r2` uploads each `{slug}/{version}.json` to the `vendo-templates` R2 bucket at the same path. The deploy worker fetches `templates/{slug}/{version}.json` at deploy time.
+3. **Sync to Supabase.** `npm run sync:supabase` joins each template against `apps_catalog.slug`, finds the matching `tool_releases` row with `status='active'`, and — **only if the active release's `version` matches the template's `version`** — UPDATEs the row's `template_version`, `wizard_inputs`, `requires`, `wizard_layout`, and `version` columns from the manifest JSON. Templates whose version doesn't match the active release are skipped (with a log line). See [`src/sync-supabase.ts`](https://github.com/runvendo/vendo-templates/blob/main/src/sync-supabase.ts).
 
 R2 is content-addressed by `{slug}/{version}`. Once a version is uploaded, **do not edit the file in place** — every change is a new version. Existing deployments reference the manifest version that was active when they deployed.
 
 <Callout type="warn">
-Editing a published `1.0.0.json` in place is a footgun. Existing deployments snapshot the manifest into `deployments.manifest` at deploy time, so they keep running. But anything that re-fetches the manifest (e.g. retries) will pick up the silent change. Always cut a new version.
+Editing a published `1.0.0.json` in place is a footgun. Existing deployments snapshot the manifest into `deployments.manifest` at deploy time, so they keep running. But anything that re-fetches the manifest (e.g. retries) will pick up the silent change, and `sync:supabase` will rewrite `tool_releases` columns next push. Always cut a new version.
+</Callout>
+
+<Callout type="warn">
+Order of operations matters: `sync:supabase` only updates an active release whose `version` matches the template. Adding `{slug}/1.0.5.json` does nothing in the DB until the matching release migration lands. The recommended flow is to merge the monorepo release migration first (or at the same time) so the active release pins to the new version before sync runs.
 </Callout>
 
 ## Required workflow secrets
 
-The publish action needs three secrets configured on the `vendo-templates` repo. These are already wired by Vendo for the main repo; you only deal with them if you fork:
+The sync action needs five secrets configured on the `vendo-templates` repo. These are already wired by Vendo for the main repo; you only deal with them if you fork:
 
 - `R2_ACCESS_KEY_ID`
 - `R2_SECRET_ACCESS_KEY`
 - `CLOUDFLARE_ACCOUNT_ID`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
 
 ## What's NOT in the templates repo
 

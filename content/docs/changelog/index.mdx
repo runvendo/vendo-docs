@@ -1,6 +1,38 @@
 ---
 title: Changelog
-description: Per-SDK release history, manifest schema versions, and consolidated breaking changes.
+description: Per-SDK release history and manifest schema versions.
 ---
 
-Semver history for the Python, TypeScript, and Swift SDKs, the `vendo.yaml` manifest schema's version log, and a consolidated breaking-changes page with migration notes — read this before pinning a new SDK version or upgrading a production tool.
+Vendo ships three SDKs and one deploy-time manifest schema. Each lives in its
+own repo with a semver-tracked `CHANGELOG.md`. Pin against these before
+upgrading a production tool.
+
+## SDK changelogs
+
+| SDK | Latest | Repo |
+|---|---|---|
+| Python (`vendo-sdk`) | 1.2.0 | [runvendo/vendo-sdk-py — CHANGELOG.md](https://github.com/runvendo/vendo-sdk-py/blob/main/CHANGELOG.md) |
+| TypeScript (`@vendodev/sdk`) | 1.4.0 | [runvendo/vendo-sdk-js — CHANGELOG.md](https://github.com/runvendo/vendo-sdk-js/blob/main/CHANGELOG.md) |
+| Swift (`vendo-sdk-swift`) | 1.0.0 | [runvendo/vendo-sdk-swift — CHANGELOG.md](https://github.com/runvendo/vendo-sdk-swift/blob/main/CHANGELOG.md) |
+
+## `vendo.yaml` manifest schema
+
+The `version:` field is the manifest schema version. Currently only `1` is
+supported. Future breaking schema changes will bump this and document the
+migration in [`reference/vendo-yaml-schema`](/docs/reference/vendo-yaml-schema).
+
+## Recent highlights
+
+- **TypeScript 1.4.0** — `DataAPI.execute` posts to `https://composio-proxy.vendo.run/v1/execute`.
+- **TypeScript 1.2.0** — `reconciler` moved to its own subpath export
+  (`import * as reconciler from "@vendodev/sdk/reconciler"`). The class no
+  longer exposes it as `vendo.reconciler`.
+- **Python 1.2.0** — package now requires `Python >= 3.11`. `Vendo` instance
+  exposes `connections, integrations, billing, webhooks, events, data` only;
+  `sso`, `deployment`, `reconciler` remain module-level (`vendo.sso.*`).
+- **Swift 1.0.0** — first stable release. `Vendo` is implemented as an
+  `actor`; `VendoError` ships with labeled associated values across the
+  full case set.
+
+For per-release notes (additions, fixes, breaking changes), follow the SDK
+links above.

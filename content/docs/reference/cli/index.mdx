@@ -42,15 +42,18 @@ Get per-command help with `vendo <command> --help`.
 
 `vendo login` accepts `--api-base <url>` to override the Vendo web URL (default `https://vendo.run`); the override is persisted in the local config so subsequent commands use it automatically.
 
+An unknown command prints `Unknown command: <name>` followed by the help text and exits with code `2`.
+
 ## Local config
 
-`vendo login` writes `~/.vendo/config.json` with mode `0600`:
+`vendo login` writes `~/.vendo/config.json` with mode `0600` (the parent `~/.vendo` directory is created with mode `0700`):
 
 ```jsonc
 {
   "apiBase": "https://vendo.run",
   "apiKey": "vendo_sk_…",
   "tenantId": "t_…",
+  "appId": "app_…",
   "issuedToEmail": "you@example.com",
   "issuedAt": "2026-05-20T12:00:00Z"
 }
@@ -58,20 +61,24 @@ Get per-command help with `vendo <command> --help`.
 
 The stored `apiKey` is a long-lived `vendo_sk_*` proxy key scoped to your tenant. Revoke it via [`vendo logout`](logout) (which also clears the file) or from the dashboard's API Keys panel.
 
+The config path is resolved as `${HOME}/.vendo/config.json`, so overriding `$HOME` relocates the file. There is no `XDG_CONFIG_HOME` support.
+
 <Callout type="warn">
   The CLI does not respect `VENDO_API_KEY` from the environment — it always reads `~/.vendo/config.json`. To use a different key for one command, run `vendo logout` and re-login, or pass `--api-base` to switch to a different Vendo instance.
 </Callout>
 
 ## Auth model
 
-`vendo login` authenticates via PKCE:
+`vendo login` is a **one-shot loopback browser bootstrap**, not PKCE:
 
-1. CLI generates a code verifier and challenge.
-2. Opens the browser to `vendo.run/cli/authorize?...` for user consent.
-3. Browser POSTs an auth code back to a local loopback callback.
-4. CLI exchanges code + verifier at `POST /api/cli/exchange` for a fresh `vendo_sk_*` key plus tenant metadata.
+1. The CLI starts an HTTP listener on `http://127.0.0.1:<random-port>/done` and a 5-minute timer.
+2. The CLI opens `${apiBase}/dev/cli-bootstrap?cb=<loopback>&mode=personal-key` in your browser.
+3. After you click **Issue dev API key**, the page mints a fresh `vendo_sk_*` key server-side (revoking any previous CLI key for your account) and POSTs the JSON `{ apiKey, tenantId, appId, email, issuedAt, ... }` directly to the loopback URL.
+4. The CLI writes the payload to `~/.vendo/config.json` and exits.
 
-The exchanged key is what every other CLI command (and HTTP request through [`/api/cli/*`](../http-api)) uses to authenticate.
+There is no code verifier, no challenge, no `state` token, no `POST /api/cli/exchange` round-trip — the key is issued by the browser page and delivered straight to the loopback listener. The loopback handler answers the CORS preflight from `apiBase` and rejects bodies missing `apiKey` / `tenantId`. See [`vendo login`](login) for the full sequence.
+
+The issued key is what every other CLI command (and every HTTP request through [`/api/cli/*`](../http-api)) uses to authenticate.
 
 ## Network surface
 

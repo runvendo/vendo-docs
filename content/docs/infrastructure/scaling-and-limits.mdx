@@ -22,7 +22,7 @@ You don't scale horizontally on Vendo today. If your tool needs that, you're on 
 
 For tools that declared a Postgres database in the manifest, Vendo provisions a Neon branch per deployment.
 
-- **Scaling**: Neon auto-scales compute up and down based on activity. Idle for ~10 minutes → scales to zero compute (the connection pool stays warm). First query after idle adds ~500ms cold-start.
+- **Scaling**: Neon auto-scales compute up and down based on activity. The default suspend timeout is **300 seconds** (5 minutes) of inactivity → Neon scales the endpoint to zero. The connection pool stays warm. First query after suspend adds ~500ms cold-start. The 15-minute healthcheck cadence is deliberately slower than this timeout so untouched databases can actually idle out.
 - **Storage**: Grows as you write. No fixed cap on Vendo Pro; you'll get notified well before any hard limit.
 - **Connections**: Use the pooled URL (`DATABASE_URL`) for everything except migrations and long transactions. Use `DATABASE_URL_UNPOOLED` for those.
 
@@ -46,7 +46,9 @@ If you have a workload that needs to run longer than 100 seconds in response to 
 
 ## Credit-based throttling
 
-Vendo doesn't impose request-rate limits on your tool's API calls through the provider proxies. The throttle is **economic**: low balance suspends the deployment.
+Vendo doesn't impose request-rate limits on your tool's API calls through the provider proxies, but apps can opt into **per-app spend caps**. When an app key has a configured daily or monthly cap, the proxy returns HTTP `429` with `Vendo-Error-Code: spend_cap_daily` (or `_monthly`) and a `Retry-After` header counting down to UTC midnight or the start of the next UTC month. See [The proxy](/docs/infrastructure/the-proxy).
+
+Beyond spend caps, the throttle is **economic**: low balance suspends the deployment.
 
 The `credit-watchdog` worker runs every 5 minutes. It groups deployments by tenant, computes hourly burn from recent credit debits, and:
 
@@ -55,6 +57,13 @@ The `credit-watchdog` worker runs every 5 minutes. It groups deployments by tena
 - **Suspends** if the projected runway is too short and there's no auto-reload available.
 
 Suspended deployments serve a status page (HTTP 503) until balance is restored. Tools below `$0` credits cannot make new metered proxy calls (HTTP 402), regardless of suspension state.
+
+## Platform-level ceilings
+
+A few ceilings live above your deployment that you don't manage but should know exist:
+
+- **Railway Pro caps a workspace at 100 projects.** Vendo bin-packs across a pool of Railway workspaces so the platform-wide ceiling scales linearly. On-call gets paged at 70/100 to add the next workspace before any user-visible failure.
+- **Cloudflare Custom Domains cap a zone at 100.** This is why new deployments default to the single-level URL form (`{tenant}-{deployment}.vendo.run`, covered by Universal SSL on `*.vendo.run`) instead of the legacy two-level form (each one consumed a Custom Domain slot).
 
 ## Long-suspended cleanup
 

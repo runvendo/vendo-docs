@@ -1,0 +1,166 @@
+---
+title: OAuth
+description: First-party and Composio-managed OAuth flows for tenant integrations.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Vendo's OAuth surface terminates the redirect dance for tenants connecting integrations. Two distinct flows live behind `/api/oauth/*`:
+
+- **First-party** (`/api/oauth/{provider}/{authorize,callback}`) — Vendo holds the OAuth client credentials at the provider. Today this is only **Notion**.
+- **Composio-managed** (`/api/oauth/composio/{provider}/{start,callback}`) — Composio brokers the OAuth flow; Vendo holds a Composio `auth_config_id`. Covers the long tail of providers (Google Calendar, Gmail, Slack, GitHub, Supabase, Instagram, …).
+
+Both flows are popup-driven. The endpoints return either a `302` redirect (start) or an HTML page that `postMessage`s back to `window.opener` and self-closes (callback). They are not JSON APIs — call them as top-level navigations, never via `fetch`.
+
+## `GET /api/oauth/{provider}/authorize`
+
+Canonical entry point for every Vendo OAuth flow. Dispatches based on the integration's catalog row: if the row has `oauth_client_config.composio.auth_config_id`, the request is redirected to the matching Composio start endpoint. Otherwise the first-party flow runs (Notion only today).
+
+### Auth
+
+Session cookie. The flow is always initiated by a signed-in Vendo user.
+
+### Query parameters
+
+| Param | Description |
+|---|---|
+| `embed` | `"1"` when the SDK popup opened this URL. Triggers the embed binding path. |
+| `app_key` | App Key bearer. When `embed=1`, identifies the originating app so the callback can auto-bind the new connection. |
+| `opener_origin` | Origin of the SDK opener window — used by the wizard's `postMessage` target. |
+| `state` | Caller-supplied opaque state. Echoed back to the opener in the final `postMessage`. |
+| `returnTo` | Optional. Same-origin path to redirect to after the popup closes. Cross-origin paths are rejected. |
+
+### Responses
+
+- **`302 Found`** — Redirect to the provider's authorize URL (first-party path) or to `/api/oauth/composio/{provider}/start` (Composio path). Sets two short-lived `HttpOnly` cookies (`vendo_oauth_<nonce>` and `vendo_oauth_pending`) so the callback can verify state.
+- **`401 { "error": "unauthorized" }`** — No session.
+- **`404 { "error": "no_tenant" }`** — User has no production tenant.
+- **`404 { "error": "provider_unknown" }`** — Slug is not in the catalog (or, for the first-party path, not one of the supported first-party providers AND has no Composio config).
+- **`500 { "error": "oauth_client_config_missing" }`** — Catalog row is missing `authorize_url` / `token_url`.
+- **`500 { "error": "encryption_key_unavailable" }`** — `INTEGRATION_ENCRYPTION_KEY` env var unset.
+- **`500 { "error": "<PROVIDER>_OAUTH_CLIENT_ID missing" }`** — The provider's OAuth client id env var is unset.
+
+## `GET /api/oauth/{provider}/callback`
+
+Provider redirect target. Only `notion` is supported here today.
+
+### Auth
+
+State cookie (`vendo_oauth_<state>`). The user does **not** need to be signed in at the moment the provider redirects — the state cookie carries the user + tenant + provider context, all HMAC-signed.
+
+### Query parameters
+
+| Param | Description |
+|---|---|
+| `code` | OAuth authorization code from the provider |
+| `state` | Nonce echoed from `authorize` — matched against the state cookie |
+| `error` | Provider-side denial (user clicked Cancel or rejected scopes) |
+
+### Response
+
+Always returns an HTML document that `postMessage`s back to `window.opener` and closes itself. Status is `200` on success, `400`/`500`/`502` on failure (the HTML still loads and posts an error payload).
+
+Success payload posted to opener:
+
+```jsonc
+{
+  "type": "vendo:oauth:done",
+  "provider": "notion",
+  "connection_id": "00000000-0000-0000-0000-000000000000",
+  "external_id": "vendo_conn_…",
+  "display_name": "Acme Notion Workspace",
+  "return_url": "/connections/notion"          // null when no ?returnTo was supplied
+}
+```
+
+Failure payload:
+
+```json
+{ "type": "vendo:oauth:error", "code": "oauth_state_invalid", "detail": "..." }
+```
+
+`code` values you can encounter: `provider_unknown`, `missing_params`, `oauth_state_invalid`, `oauth_exchange_failed`, `db_insert_failed`, `encryption_key_unavailable`, plus whatever the provider passes in `?error=`.
+
+When `embed=1` carried an `app_key` through `authorize`, the callback also auto-binds the new connection to the originating app (`app_connection_bindings` upsert) and writes the kind=`integration` env-var rows.
+
+## `GET /api/oauth/composio/{provider}/start`
+
+Composio-managed OAuth entry. Reads `oauth_client_config.composio.auth_config_id` from the catalog row, calls `composio.connectedAccounts.initiate(tenantId, authConfigId, { callbackUrl, allowMultiple: true })`, and redirects to the Composio-hosted authorize URL.
+
+### Auth
+
+Session cookie.
+
+### Query parameters
+
+Same as the first-party `/api/oauth/{provider}/authorize` (`embed`, `app_key`, `opener_origin`, `state`, `returnTo`), plus:
+
+| Param | Description |
+|---|---|
+| `internal` | `"1"` to bypass the embed-mode wizard redirect (set automatically when the wizard's Connect button reopens this route). |
+
+### Responses
+
+- **`302 Found`** — Redirect to Composio's hosted authorize URL. Two state cookies scoped to the callback path are set.
+- **`302 Found`** to `/connections/connect/{provider}` — embed-mode without `internal=1`: the wizard renders first to show the user provider info + existing-connection picker.
+- **`401 { "error": "unauthorized" }`** — No session.
+- **`404 { "error": "provider_unknown" }`** — Provider not in the Composio catalog.
+- **`404 { "error": "no_tenant" }`** — User has no production tenant.
+- **`500 { "error": "composio_auth_config_missing" }`** — Catalog row is missing the Composio `auth_config_id`.
+- **`500 { "error": "encryption_key_unavailable" }`** — `INTEGRATION_ENCRYPTION_KEY` env var unset.
+- **`502 { "error": "composio_initiate_failed", "detail": "..." }`** — Composio's `initiate()` threw.
+- **`502 { "error": "composio_no_redirect_url" }`** — Composio returned a connectedAccount with no `redirectUrl`.
+
+## `GET /api/oauth/composio/{provider}/callback`
+
+Composio's hosted authorize redirects here after consent.
+
+### Auth
+
+State cookie + matching `cstate` query parameter.
+
+### Query parameters
+
+| Param | Description |
+|---|---|
+| `cstate` | Nonce echoed from `start`; matched against the state cookie |
+| `error` | Provider-side or Composio-side denial |
+
+### Response
+
+Same HTML postMessage shape as the first-party callback. The popup also waits up to 2 s for the opener to ACK (`{ type: "vendo:connection:ack", connection_id }`) before closing, to avoid races where the opener processes the message before the window unloads.
+
+Success payload (`200`):
+
+```jsonc
+{
+  "type": "vendo:oauth:done",
+  "provider": "google-calendar",
+  "connection_id": "00000000-0000-0000-0000-000000000000",
+  "external_id": "vendo_conn_…",
+  "display_name": "user@example.com",
+  "return_url": null
+}
+```
+
+The connection is inserted with `profile: "composio_managed"` and `encrypted_credential: null` — Composio holds the tokens. `metadata.composio_account_id` and `metadata.composio_toolkit_slug` are persisted so the proxy can resolve the Composio connection on each call. Discovery providers (e.g. Supabase project ref, Instagram user id) also persist a `metadata.context[provider]` block with the resolved binding context.
+
+Failure payload (`400` / `500` / `502`):
+
+```json
+{ "type": "vendo:oauth:error", "code": "composio_get_failed", "detail": "..." }
+```
+
+`code` values: `provider_unknown`, `missing_cstate`, `oauth_state_invalid`, `missing_composio_account_id`, `composio_get_failed`, `composio_not_active`, `db_insert_failed`, `encryption_key_unavailable`, plus whatever Composio passes in `?error=`.
+
+If the start request carried `embed=1` with an `app_key`, the callback auto-binds the new connection to the originating app and writes its env vars before posting the success message.
+
+<Callout type="warn">
+  OAuth callback endpoints render HTML and depend on the state cookies that `authorize` / `start` set. Don't call them with `fetch` — the response is meant to render in a popup window with `window.opener` and post back to it. The state cookies are scoped to the callback path, so navigating to the callback URL directly from a tab outside the popup chain will fail with `oauth_state_invalid`.
+</Callout>
+
+### Related
+
+- [Connections (runtime)](connections) — what deployed apps see after a successful connect
+- [Apps](apps) — `POST /api/apps/{id}/bindings` for non-OAuth binding flows
+- [Security > OAuth flow security](/docs/security/oauth-flow-security)

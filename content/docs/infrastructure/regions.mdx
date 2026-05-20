@@ -7,13 +7,13 @@ Vendo runs in a small number of regions today. The product surface for region se
 
 ## Default region
 
-Vendo deployments default to **US East**:
+Vendo deployments land in **US East** in practice today:
 
-- **Railway compute**: Railway's US East region.
-- **Neon Postgres**: `aws-us-east-1`.
+- **Neon Postgres**: `aws-us-east-1` by default. A template manifest can override per-database via the schema's `databases[].region` field, but most tools take the default.
+- **Railway compute**: Vendo doesn't pass an explicit region to Railway today, so projects inherit whatever region Railway picks for the workspace. In practice this is US-aligned, but it's not guaranteed in code.
 - **R2 storage**: Cloudflare's automatic location strategy (Cloudflare doesn't expose region pinning at the bucket level by default).
 
-This combination puts your container and your database in the same physical region, which means Postgres queries from your container are sub-millisecond on the network. That's the latency model you should design for.
+This combination puts your container and your database in the same broad US region, which keeps Postgres queries from your container in the low-millisecond range on the network. That's the latency model you should design for.
 
 ## The edge
 

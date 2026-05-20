@@ -25,11 +25,13 @@ API base: https://vendo.run
 Balance:  $12.50
 ```
 
-The balance line is best-effort. If the call to [`/api/cli/balance`](../http-api/billing) fails, you'll see:
+The balance line is best-effort. If the call to [`GET /api/cli/balance`](../http-api/billing) fails, you'll see:
 
 ```
 Balance:  (unavailable: <reason>)
 ```
+
+`Email:` and `Issued:` fall back to `(unknown email)` and `(unknown)` respectively if the corresponding fields are missing from `~/.vendo/config.json`.
 
 When there is no local credential:
 
@@ -37,7 +39,7 @@ When there is no local credential:
 Not logged in. Run `vendo login`.
 ```
 
-Exits non-zero in that case.
+Exits with code `1` in that case.
 
 ## Related
 

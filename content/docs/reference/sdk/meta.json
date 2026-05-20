@@ -5,6 +5,7 @@
     "python/reference",
     "typescript",
     "typescript/reference",
-    "swift"
+    "swift",
+    "swift/reference"
   ]
 }

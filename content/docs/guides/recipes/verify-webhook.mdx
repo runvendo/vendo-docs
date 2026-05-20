@@ -1,31 +1,37 @@
 ---
 title: Verify a Webhook
-description: HMAC-verify an inbound Vendo webhook and react to connection events.
+description: HMAC-verify an inbound webhook delivered through Vendo's hooks worker using the SDK's webhooks.verify helper.
 ---
 
-`vendo.webhooks.verify` checks the HMAC signature on an inbound Vendo webhook and returns the parsed event. It raises `ValidationError` on a bad or missing signature.
+`WebhooksAPI.verify()` checks the HMAC signature on an inbound webhook that Vendo signed before forwarding it to your deployment. It returns the parsed event or raises `ValidationError` on a bad / missing / stale signature.
 
-This works in any mode (Vendo and OSS). Verification is entirely local — no network call. The secret comes from the `VENDO_WEBHOOK_SECRET` env var.
+Verification is entirely local — no network call. The secret comes from the `VENDO_WEBHOOK_SECRET` env var (per-deployment, injected automatically in Vendo mode).
+
+> Outbound lifecycle events — `connection.connected`, `billing.balance_changed`, etc. — are delivered over **SSE**, not as outbound HTTP webhooks. Subscribe with `vendo.events.subscribe()` (Python) or `vendo.events.subscribe()` (TypeScript async iterable) to consume those. See [the SSE events example](#consuming-lifecycle-events-over-sse) below. The `webhooks.verify` helper on this page is for **inbound provider webhooks** that Vendo's [hooks worker](/docs/infrastructure/the-proxy) re-signs before forwarding (Telegram is the only provider on that path today).
 
 ---
 
-## FastAPI / ASGI
+## Verify a forwarded webhook
 
 ```python
-import vendo
+from vendo import Vendo
 from vendo.errors import ValidationError
 
-def handle_webhook(headers: dict, body: bytes) -> dict:
+client = Vendo()
+
+def handle_webhook(headers: dict, body: str) -> dict:
+    # body MUST be the raw request body as a string (NOT bytes).
+    # If your framework gives you bytes, decode it first: body.decode("utf-8").
     try:
-        event = vendo.webhooks.verify(headers, body)
+        event = client.webhooks.verify(headers, body)
     except ValidationError:
         return {"status": 400, "error": "invalid signature"}
 
-    # event.type is the event kind; event.data is the typed payload.
+    # event.type is the event kind; event.data is the parsed payload.
     if event.type == "connection.connected":
         slug = event.data.get("slug")
         if isinstance(slug, str):
-            vendo.invalidate(slug)
+            client.invalidate(slug)
 
     return {"status": 200, "ok": True, "event_id": event.id, "at": event.occurred_at}
 ```
@@ -65,31 +71,103 @@ export async function POST(request: Request) {
 
 ## How signature verification works
 
-Vendo signs every outbound webhook with HMAC-SHA256 using the deployment's `VENDO_WEBHOOK_SECRET`. The signature is sent in the `X-Vendo-Signature` header as `sha256=<hex-digest>`.
+Vendo signs the forwarded body with HMAC-SHA256 over a timestamp-prefixed payload and sends two headers:
 
-`webhooks.verify`:
-1. Reads `X-Vendo-Signature` from headers.
-2. Computes `HMAC-SHA256(VENDO_WEBHOOK_SECRET, body)`.
-3. Compares the two. Raises `ValidationError` if they don't match or if the header is missing.
+| Header | Description |
+|---|---|
+| `Vendo-Signature` | Lowercase hex digest of `HMAC-SHA256(secret, "${Vendo-Timestamp}.${body}")`. No `sha256=` prefix. |
+| `Vendo-Timestamp` | Either unix epoch seconds (e.g. `1716240000`) or an RFC-3339 timestamp (e.g. `2026-05-20T12:00:00Z`). |
+
+`verify()`:
+
+1. Reads both headers. Raises `ValidationError` if either is missing.
+2. Rejects timestamps more than 5 minutes (`max_age_sec=300`) out of clock alignment to prevent replay.
+3. Computes the expected HMAC over `"${timestamp}.${body}"` and compares it to `Vendo-Signature` with `hmac.compare_digest` / `timingSafeEqual`.
 4. Parses the body as JSON and returns a `WebhookEvent`.
 
-The body must be the raw bytes / string before any JSON parsing. Do not parse the body before passing it to `verify`.
+The `body` argument must be the raw request body **as a string** (Python `str`, TypeScript `string`). The Python SDK rejects `bytes` — decode the body before passing it. Do not parse the body before calling `verify()`; the signature is over the exact bytes the sender hashed.
 
 ---
 
-## Common event types
+## Hand-rolled verification (no SDK)
 
-| `event.type` | `event.data` fields | What to do |
+If you can't use the SDK — verifying in a language Vendo doesn't ship an SDK for, or inside a Cloudflare Worker — the scheme is straightforward:
+
+```python
+import hmac
+import hashlib
+import os
+
+def verify(headers, body: str) -> bool:
+    secret = os.environ["VENDO_WEBHOOK_SECRET"].encode()
+    sig = headers.get("Vendo-Signature", "").strip()
+    ts = headers.get("Vendo-Timestamp", "").strip()
+    if not sig or not ts:
+        return False
+    expected = hmac.new(secret, f"{ts}.{body}".encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)
+```
+
+Always include the timestamp inside the HMAC input — signing just the body lets an attacker replay any captured request indefinitely.
+
+---
+
+## Consuming lifecycle events over SSE
+
+Connection-lifecycle and billing events flow over the SDK's SSE stream at `/api/deployments/me/events`, not as outbound HTTP webhooks. The SDK exposes them as an iterator:
+
+```python
+from vendo import Vendo
+
+client = Vendo()
+
+for msg in client.events.subscribe():
+    # msg.type is the event kind ("connection.connected", "billing.balance_changed", ...)
+    # msg.data is the parsed payload dict (matches the wire shape in web/src/lib/sse/types.ts).
+    if msg.type == "connection.connected":
+        slug = msg.data.get("slug") if isinstance(msg.data, dict) else None
+        if isinstance(slug, str):
+            client.invalidate(slug)
+```
+
+```typescript
+import { Vendo } from "@vendodev/sdk";
+
+const vendo = new Vendo();
+
+for await (const msg of vendo.events.subscribe()) {
+  if (msg.type === "connection.connected") {
+    const slug = (msg.data as { slug?: string } | null)?.slug;
+    if (typeof slug === "string") vendo.invalidate(slug);
+  }
+}
+```
+
+The iterator reconnects automatically on transient errors with exponential backoff. Both flavors require Vendo mode (`VENDO_API_KEY` set) and raise `VendoOnlyFeature` in OSS.
+
+---
+
+## Event kinds on the SSE stream
+
+These are the kinds the SDK can currently surface. The wire field is `kind`; the SDK normalizes it to `msg.type` on `EventStreamMessage`.
+
+| `msg.type` | `msg.data` fields | What to do |
 |---|---|---|
-| `connection.connected` | `slug`, `deployment_id` | Call `vendo.invalidate(slug)` to clear the token cache. |
-| `connection.disconnected` | `slug`, `deployment_id` | Update any UI that shows the connection status. |
-| `connection.needs_reauth` | `slug`, `deployment_id`, `error_message` | Notify the user to reconnect. |
-| `billing.low_balance` | `credits_remaining_micros`, `threshold_micros` | Trigger a top-up or send an alert. |
+| `connection.connected` | `slug`, `connection_id` | Call `client.invalidate(slug)` to clear the token cache. |
+| `connection.disconnected` | `slug`, `connection_id` | Update any UI that shows connection status. |
+| `connection.changed` | `slug`, `connection_id` | Same as `disconnected` for most tools — the binding moved. |
+| `connection.status_changed` | `slug`, `connection_id`, `status` | Render the new status. `status: "needs_reauth"` is when the user must redo OAuth. |
+| `billing.usage_recorded` | `provider`, `micros` | Update a usage UI (optional — `billing.usage()` is the source of truth). |
+| `billing.balance_changed` | `remaining_micros` | Refresh a balance display. |
+| `billing.cap_warned` | `window` (`"daily"` / `"monthly"`), `pct` | Surface a low-headroom warning. |
+| `billing.cap_tripped` | `window` | Stop initiating spend; the proxy is already enforcing this. |
+
+Source of truth: `web/src/lib/sse/types.ts` in the monorepo.
 
 ---
 
 ## Notes
 
-- `VENDO_WEBHOOK_SECRET` is per-deployment. In Vendo mode Vendo injects it automatically. In OSS mode you set it yourself.
-- Keep a 5-minute replay window in mind: Vendo signs with a timestamp, and `verify` rejects signatures older than 5 minutes to prevent replay attacks.
-- The `body` argument must be the raw request body (bytes or string). Parse it yourself only after `verify` returns.
+- `VENDO_WEBHOOK_SECRET` is per-deployment. In Vendo mode it's injected at boot. In OSS mode you set it yourself when running a tool that verifies forwarded provider webhooks.
+- The 5-minute replay window is configurable on the API constructor: `WebhooksAPI(max_age_sec=600)` (Python) / `new WebhooksAPI({ maxAgeSec: 600 })` (TypeScript).
+- Telegram webhook delivery has its own per-provider verification (`X-Telegram-Bot-Api-Secret-Token`) that the hooks worker checks before forwarding. The SDK helper covers the **Vendo-signed envelope** added on top. See [the Telegram tutorial](/docs/guides/tutorials/telegram-bot-from-scratch) for the dual-verification pattern.

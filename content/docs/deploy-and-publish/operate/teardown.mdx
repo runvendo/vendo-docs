@@ -28,7 +28,7 @@ Teardown is irreversible. There is no soft-delete, no recovery window, no backup
 | `deployment_credentials` | Yes |
 | `deploy_logs` | Yes |
 | `deployments` row | No — flipped to `status='destroyed'`, retained for audit |
-| `apps` row | No — retained (links tenant ↔ tool history) |
+| `apps` row | No — retained, but `disconnected_at` is set to `now()` by the `disconnect_authorization` phase |
 | `usage_events` | No — retained for billing history |
 
 ## What survives
@@ -49,17 +49,20 @@ Tool authors don't tear down tenant deployments. Even with admin access on the c
 
 `TeardownWorkflow` ([`cloudflare/deploy-worker/src/workflows/teardown.ts`](https://github.com/runvendo/vendo/blob/main/cloudflare/deploy-worker/src/workflows/teardown.ts)) runs idempotent phases:
 
-1. `teardown_compute` — `projectDelete` on Railway (or equivalent on other providers).
-2. `teardown_database` — drop the Neon branch.
-3. `teardown_r2` — empty + delete the bucket.
-4. `teardown_domain` — remove the Worker Custom Domain, wipe the KV entry.
-5. `revoke_proxy_key` — invalidate `vendo_api_key`.
-6. `finalize` — `status='destroyed'`, `destroyed_at=now()`.
+1. `fetch_deployment` — load the row, short-circuit if already `destroyed`.
+2. `teardown_compute` — `projectDelete` on Railway (or equivalent on other providers).
+3. `teardown_databases` — drop the Neon branch (and any other database providers attached).
+4. `remove_dns` — remove the Cloudflare Worker Custom Domain / DNS record.
+5. `revoke_proxy_keys` — invalidate `vendo_api_key` (and any other proxy keys bound to the deployment).
+6. `delete_r2_bucket` — empty and delete the deployment's R2 bucket.
+7. `wipe_credentials` — null out `deployment_credentials` and `deployment_env_vars` rows.
+8. `disconnect_authorization` — set `apps.disconnected_at = now()` on the linked `apps` row so the catalog UI knows this binding is soft-detached.
+9. `finalize` — `status='destroyed'`, `destroyed_at=now()`.
 
 Each phase checks current state before acting — re-running the workflow on a partially-destroyed deployment is safe.
 
 <Callout type="warn">
-Railway's `projectDelete` is the one phase that re-throws on failure (other providers swallow). The reason: orphaned Railway projects keep accruing charges. If teardown fails at `teardown_compute`, verify the Railway project still exists, delete it manually, and retry the teardown.
+`teardown_compute` is the phase that matters most for cost — orphaned Railway projects keep accruing charges. If teardown fails at this step, verify the Railway project still exists, delete it manually, and retry the teardown (`POST /api/deployments/[id]/destroy`).
 </Callout>
 
 ## Edge cases
@@ -72,7 +75,7 @@ Railway's `projectDelete` is the one phase that re-throws on failure (other prov
 
 After teardown:
 
-- The URL `{deployment_slug}.{tenant_slug}.vendo.run` returns NXDOMAIN within minutes (CF DNS propagation).
+- The deployment URL — `{tenant_slug}-{deployment_slug}.vendo.run` for new deployments (single-level format), or the legacy `{deployment_slug}.{tenant_slug}.vendo.run` for older ones — returns NXDOMAIN within minutes (CF DNS propagation).
 - The deployment row hides from the dashboard's default Apps view (filter `status != 'destroyed'`).
 - The dashboard's history view still shows the row with a "Destroyed" badge for audit.
 

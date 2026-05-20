@@ -1,34 +1,49 @@
 ---
 title: Wizard inputs
-description: The configuration the tenant fills in at deploy time — your tool's settings form.
+description: The configuration the tenant fills in at deploy time — declared in your template manifest, surfaced as env vars at boot.
 ---
 
-`userInputs:` declares the configuration the tenant sees and fills in when they deploy your tool. The deploy wizard renders one field per entry, validates the values, and writes them into the deployment's environment as static env vars before your container boots.
+import { Callout } from "fumadocs-ui/components/callout";
 
-Use it for anything tenant-specific and stable: a default greeting, a company name, an admin email, a feature flag. Don't use it for secrets that change frequently or for provider-side credentials — those flow through [integrations](/docs/build-a-tool/vendo-yaml/integrations).
+`userInputs[]` declares the configuration the tenant sees and fills in when they deploy your tool. The deploy wizard renders one field per entry, validates the values, and writes them into the deployment's environment as static env vars before your container boots.
+
+Use it for anything tenant-specific and stable: a default greeting, a company name, an admin email, a feature flag. Don't use it for secrets that rotate frequently or for provider-side credentials — those flow through [integrations](/docs/build-a-tool/vendo-yaml/integrations).
+
+<Callout type="warn">
+  `userInputs` and `wizardLayout` are **not** `vendo.yaml` fields. They live in your tool's **template manifest** (`templates/<slug>/<version>.json` in `vendo-templates`). The `vendo.yaml` schema rejects them. The page below documents the shape the deploy worker validates; for the full template manifest reference see [Deploy & publish → Manifest](/docs/deploy-and-publish/publish-to-catalog/manifest).
+</Callout>
 
 ## Shape
 
-```yaml
-userInputs:
-  - key: GREETING
-    label: Greeting message
-    description: Shown on the welcome screen.
-    inputType: text
-    default: Welcome
-    category: user_optional
+In your template manifest:
 
-  - key: ADMIN_EMAIL
-    label: Admin email
-    description: Used to create the initial admin account.
-    inputType: email
-    category: user_required
-
-  - key: ENABLE_BETA
-    label: Enable beta features
-    inputType: boolean
-    default: false
-    category: user_optional
+```json
+{
+  "userInputs": [
+    {
+      "key": "GREETING",
+      "label": "Greeting message",
+      "description": "Shown on the welcome screen.",
+      "inputType": "text",
+      "default": "Welcome",
+      "category": "user_optional"
+    },
+    {
+      "key": "ADMIN_EMAIL",
+      "label": "Admin email",
+      "description": "Used to create the initial admin account.",
+      "inputType": "text",
+      "category": "user_required"
+    },
+    {
+      "key": "ENABLE_BETA",
+      "label": "Enable beta features",
+      "inputType": "boolean",
+      "default": false,
+      "category": "user_optional"
+    }
+  ]
+}
 ```
 
 Each entry:
@@ -36,10 +51,13 @@ Each entry:
 - **`key`** — UPPER_SNAKE name of the env var. Whatever the tenant types becomes `process.env.GREETING` (or `os.environ["GREETING"]`).
 - **`label`** — the human-readable field label in the wizard.
 - **`description`** — optional helper text shown below the label.
-- **`inputType`** — `text`, `email`, `url`, `password`, `boolean`, `select`, `textarea`. Drives the rendered input and basic validation.
+- **`inputType`** — one of `text`, `password`, `select`, `number`, `boolean`, `textarea` (canonical enum: [`web/src/lib/wizard-input.ts`](https://github.com/runvendo/vendo/blob/main/web/src/lib/wizard-input.ts)). Drives the rendered input and basic validation. There is no `email` or `url` type — use `text` with a `validations.pattern` if you need format checking.
 - **`default`** — pre-filled value. The tenant can still change it.
-- **`category`** — `user_required` (the wizard blocks on empty) or `user_optional` (can be left blank). Required is the default.
+- **`category`** — `user_required` (the wizard blocks on empty) or `user_optional` (can be left blank).
 - **`options`** — for `inputType: select`, the list of `{ label, value }` choices.
+- **`validations`** — optional `{ minLength, maxLength, pattern, min, max }` constraints.
+- **`wizardStep`** — optional group name used by `wizardLayout` (see below).
+- **`visibility`** — `visible` (default) or `secret` (masks the value in the dashboard after submit).
 
 ## How it shows up at runtime
 
@@ -69,31 +87,44 @@ Boolean inputs are persisted as the string `"true"` / `"false"`. Compare against
 | A feature flag the tenant chooses | A token tied to an OAuth connection |
 | A static configuration string | Anything that rotates or refreshes |
 
-If the value comes from another platform — OpenAI, Telegram, Stripe, Notion — it's almost certainly an integration, not a wizard input. Wizard inputs are for things the tenant *invents*; integrations are for things the tenant *connects*.
+If the value comes from another platform — OpenAI, Telegram, Composio, Notion — it's almost certainly an integration, not a wizard input. Wizard inputs are for things the tenant *invents*; integrations are for things the tenant *connects*.
 
 ## Wizard layout
 
-By default, every `userInputs[]` entry shows up on a single page in the wizard, in the order you declared them. For longer setup flows, you can group inputs into named steps with `wizardLayout:`:
+By default, every `userInputs[]` entry shows up on a single page in the wizard. For longer setup flows you can group inputs into sub-steps with `wizardLayout`. The real shape is:
 
-```yaml
-wizardLayout:
-  steps:
-    - title: Basics
-      inputs: [GREETING, ADMIN_EMAIL]
-    - title: Features
-      inputs: [ENABLE_BETA]
-    - title: Anything else
-      inputs: ["*"]
+```json
+{
+  "wizardLayout": {
+    "version": 1,
+    "subSteps": [
+      {
+        "id": "connect",
+        "title": "Connect integrations",
+        "sections": [
+          { "type": "integration", "providers": ["openrouter", "telegram"] }
+        ]
+      },
+      {
+        "id": "configure",
+        "title": "Basic settings",
+        "sections": [
+          { "type": "wizard_inputs", "groups": ["basic"] }
+        ]
+      }
+    ]
+  }
+}
 ```
 
-`["*"]` sweeps any input not explicitly listed in earlier steps. Omit `wizardLayout:` entirely for the single-page default.
+Section types are `deployment_name`, `workspace`, `admin_credentials`, `wizard_inputs` (with `groups: string[]`), `integration` (with `providers: string[]`), `tool_extras`. `["*"]` inside `groups` or `providers` sweeps up everything not placed in earlier sub-steps. Canonical schema: [`web/src/lib/wizard-layout.ts`](https://github.com/runvendo/vendo/blob/main/web/src/lib/wizard-layout.ts). Full reference in [Deploy & publish → Wizard layout](/docs/deploy-and-publish/publish-to-catalog/wizard-layout).
 
 ## What's NOT a wizard input
 
-Two things tenants type that *don't* go in `userInputs:`:
+Two things tenants type that *don't* go in `userInputs[]`:
 
-- **The deployment slug.** Vendo collects the URL slug (`{deployment-slug}.{tenant-slug}.vendo.run`) in a system step before the wizard renders. You can't override or rename it from `vendo.yaml`.
-- **Admin credentials.** If your tool needs an initial admin password, declare `adminBootstrap:` in your template (covered in [Deploy & publish](/docs/deploy-and-publish)), not `userInputs:`. The platform handles password generation and seeding.
+- **The deployment slug.** The wizard collects it in a `deployment_name` section before any inputs render. You can't override or rename it from the manifest.
+- **Admin credentials.** If your tool needs an initial admin password, declare `adminBootstrap` in your template manifest, not `userInputs`. The platform handles password generation and seeding.
 
 ## Tenant-changeable after deploy
 
