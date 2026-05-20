@@ -1,0 +1,65 @@
+---
+title: Healthchecks
+description: The healthcheck contract, what fails counts as, and what happens to a deployment that flunks them.
+---
+
+Vendo polls every running `deployment` tool with an HTTP healthcheck. If you ship a tool that doesn't answer correctly, it ends up tagged "degraded" in the dashboard — even when it's functionally working. This page tells you exactly what the contract is.
+
+## The contract
+
+Your tool MUST serve a healthcheck endpoint that:
+
+- Responds to `GET` over plain HTTP (no auth, no cookies).
+- Returns `200` when the tool is healthy.
+- Returns within 10 seconds.
+
+The default path is `/healthz`. Your template manifest can override this with the `healthEndpoint` field — pick a path that doesn't collide with your app routes (`/health`, `/api/health`, `/_healthz` are all fine).
+
+Anything else — `2xx` other than `200`, `3xx`, `4xx`, `5xx`, or timeout — counts as unhealthy.
+
+## What "healthy" should mean
+
+Two reasonable choices:
+
+- **Liveness only.** Return `200` if the process is up. Cheap, never lies about external dependencies. Good default.
+- **Liveness + critical deps.** Return `200` only if the process is up AND your Postgres is reachable AND your Redis is reachable. More accurate, but you can flap if a dep has a transient blip.
+
+Avoid heavy work in the healthcheck path. No DB writes, no external API calls (you'll burn credits on every probe), no long queries. The probe runs every 15 minutes by default; if it takes 8 seconds, you've made your tool slower and your bill bigger.
+
+## The cadence
+
+Vendo's `health-monitor` worker probes every running deployment every 15 minutes. The interval is deliberate — Neon Postgres can scale to zero after ~10 minutes idle, and probing more often would wake the database back up on every tick.
+
+After **3 consecutive failures** (~45 minutes), your deployment's `health_status` flips to `degraded`. After 2 consecutive successes it flips back to `healthy`. There's no flap protection beyond that — if you genuinely fail and recover within one tick, you bounce.
+
+## What "degraded" actually does
+
+Today, `degraded` is a **dashboard signal only**. It surfaces in the deployment list and on the detail page so the user knows something's off. It does **not**:
+
+- Restart your container.
+- Suspend the deployment.
+- Block requests through the app-proxy.
+- Page the user.
+
+Your real users keep hitting your tool's URL. A failing healthcheck and a failing app are two different things — Vendo trusts you to know the difference.
+
+## When healthchecks bite you
+
+There are three patterns that consistently cause unhealthy-but-working deployments. None of them are bugs in the platform.
+
+1. **No `/healthz` route, no override.** Your manifest didn't declare `healthEndpoint`, your app doesn't have `/healthz`, and now every probe is a 404. Permanently degraded. Fix: add the route, or override the path in the manifest.
+
+2. **Healthcheck behind auth.** You added `/healthz` but it's behind your app's session middleware. The probe sends no cookies; every probe is a 401 or 302. Fix: exclude the healthcheck path from auth middleware.
+
+3. **Healthcheck depends on a slow upstream.** Your `/healthz` calls an LLM "to verify connectivity". Probes time out at 10s, healthcheck fails, you burn credits on every tick. Fix: return liveness only, never call external APIs from the healthcheck.
+
+## Deploy-time vs ongoing healthchecks
+
+The above describes the **ongoing** healthcheck. There's also a one-time check Vendo runs during deploy, before flipping the deployment to `running`. Same path, same expectations, but a different worker. If it fails, your deploy fails outright and the deployment lands in `failed` rather than `running`.
+
+For Railway tools, this means: if you can't pass your own healthcheck locally, you won't get past the deploy pipeline.
+
+## Related
+
+- [Logs and observability](/docs/infrastructure/logs-and-observability) — where to look when probes start failing.
+- [Scaling and limits](/docs/infrastructure/scaling-and-limits) — what happens at the platform layer when things go wrong.

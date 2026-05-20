@@ -1,0 +1,79 @@
+---
+title: Isolation
+description: What's per-tenant, what's per-deployment, what's shared — and where the boundaries are enforced.
+---
+
+A useful platform makes you trust the isolation boundary without thinking about it. This page exists so you can think about it once and then forget.
+
+## The boundary model
+
+```
+Per deployment            Per tenant                Shared (Vendo platform)
+─────────────────         ─────────────────         ─────────────────
+Railway project           Stripe customer           App-proxy worker
+Neon Postgres branch      Credit balance (wallet)   Provider proxy workers
+R2 bucket                 Connection inventory      Credentials worker
+Container env vars        Saved cards               Hooks worker
+Generated secrets         Workspace members         KV namespace
+Bootstrap admin creds                               Postgres (Supabase)
+Worker Custom Domain
+```
+
+Each deployment is its own Railway project. Each Railway project has its own services, env vars, and database connection — there is no shared filesystem or network between deployments, even when those deployments are owned by the same tenant.
+
+## Per-deployment isolation
+
+**Compute**: A separate Railway project per deployment. Your container can't reach another deployment's container directly — they don't share a network. The only ways one deployment can talk to another are via public HTTPS (just like any internet host) or via Vendo platform calls (`/api/v1/*` with a proxy key).
+
+**Database**: A separate Neon Postgres branch per deployment that declared a database. Two deployments of the same tool by the same tenant get two databases. Data does not cross.
+
+**Object storage**: A separate R2 bucket per deployment that declared object storage. Credentials in your env grant access only to that bucket.
+
+**Secrets**: Each deployment's `system` and `integration` env vars are encrypted with AES-256-GCM in Postgres and presented to that specific Railway service. Other deployments — even other deployments of the same tool — never see them.
+
+**Bootstrap admin**: For tools that bootstrap an admin user, the password is generated per-deployment, encrypted, and shown to the tenant once. It's never reused across deployments.
+
+## Per-tenant isolation
+
+**Credit balance**: One wallet per tenant. All of a tenant's deployments draw from it. A deployment running out of credits suspends — but it suspends the specific deployment, not the whole tenant. Other deployments of the same tenant keep running until the wallet is empty across the board.
+
+**Connections**: OAuth tokens (Slack install, Notion bot, etc.) live at the tenant level. A tenant can bind the same Slack workspace to multiple deployments. Vendo's bindings table is the join — connections themselves don't get duplicated per deployment.
+
+**Workspace members**: A tenant is a workspace; members are people with access to that workspace. Visibility into a deployment's dashboard, logs, and settings is gated by workspace membership. There is no cross-tenant view.
+
+## What's shared
+
+Some pieces of Vendo's infrastructure are necessarily shared because they're the platform itself:
+
+- The **app-proxy worker** handles every `*.vendo.run` deployment URL. It enforces the tenant boundary on every request: a deployment's KV routing entry carries its `tenantId`, and `vendoAuth` cookies are checked against it. A cookie minted for tenant A cannot proxy through to a deployment owned by tenant B — the proxy returns 403.
+- The **provider proxies** (`{provider}-proxy.vendo.run`) authenticate every request to a hashed key, look up the tenant from the key, and bill that tenant. There's no shared cache across tenants of billable state.
+- The **credentials worker** vends OAuth tokens by walking the binding chain — it cannot return tenant A's token to a key issued to tenant B.
+- The **KV namespace** stores routing, key, and balance data for every deployment. Keys are prefixed (`deploy:`, `key:`, `balance:`, `conn:`) and lookups always carry an identifier; no enumeration is possible from a Worker request.
+- **Postgres (Supabase)** stores all tenant-level data. RLS policies grant the service role full access and authenticated users read-only access to their own tenant; cross-tenant reads return zero rows.
+
+## Cross-tenant blast radius
+
+If a single deployment misbehaves — burns CPU, fills its database, leaks memory — it affects:
+
+- Itself (obvious).
+- Its own tenant's credit balance, via metered proxy calls.
+- The shared platform layers (proxy, KV, Postgres) at the noisy-neighbor level only.
+
+It does not affect other tenants' deployments, data, or credits. The boundary is per-tenant at the cost layer and per-deployment at the compute layer.
+
+## Code-level verification
+
+The places these boundaries are enforced, if you're curious:
+
+- App-proxy tenant check: `cloudflare/app-proxy/src/auth.ts` (cookie `tenant_id` vs `deploy:{subdomain}.tenantId`).
+- Provider proxy tenant resolution: derived from the bearer's `keyData.tenantId`, never from a header.
+- Credentials worker scope: app-scoped keys walk `app_connection_bindings`; connection-scoped keys lock to one `connectionId`.
+- Database RLS: per-table policies; service role bypasses, authenticated users get tenant scope.
+
+You don't have to trust the words on this page. You can read each of these checks in the open-source repository.
+
+## Related
+
+- [The proxy](/docs/infrastructure/the-proxy) — how tenant identity is derived per-request.
+- [Subdomains](/docs/infrastructure/subdomains) — where the per-tenant URL boundary starts.
+- [Scaling and limits](/docs/infrastructure/scaling-and-limits) — the noisy-neighbor model in numbers.

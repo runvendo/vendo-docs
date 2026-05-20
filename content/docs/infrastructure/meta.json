@@ -1,4 +1,16 @@
 {
   "title": "Infrastructure",
-  "pages": ["index"]
+  "pages": [
+    "index",
+    "runtime-targets",
+    "subdomains",
+    "the-proxy",
+    "credentials-worker",
+    "logs-and-observability",
+    "healthchecks",
+    "secrets-and-env",
+    "scaling-and-limits",
+    "regions",
+    "isolation"
+  ]
 }

@@ -1,0 +1,54 @@
+---
+title: Regions
+description: Where your tool's compute and data live, and what's selectable.
+---
+
+Vendo runs in a small number of regions today. The product surface for region selection is intentionally minimal — most tools don't need to choose, and the ones that do usually need other things too.
+
+## Default region
+
+Vendo deployments default to **US East**:
+
+- **Railway compute**: Railway's US East region.
+- **Neon Postgres**: `aws-us-east-1`.
+- **R2 storage**: Cloudflare's automatic location strategy (Cloudflare doesn't expose region pinning at the bucket level by default).
+
+This combination puts your container and your database in the same physical region, which means Postgres queries from your container are sub-millisecond on the network. That's the latency model you should design for.
+
+## The edge
+
+Two pieces of Vendo's infrastructure run on Cloudflare's global edge, not in a single region:
+
+- **App-proxy** (the worker handling `*.vendo.run`). Runs in the Cloudflare PoP closest to the user, then forwards to your US East backend over Cloudflare's backbone.
+- **Provider proxies** (`{provider}-proxy.vendo.run`). Same — edge entry, forwards to the upstream provider's API.
+
+Edge entry means a user in Singapore connecting to your tool gets a fast TLS handshake at the Singapore PoP, then pays the trans-Pacific latency to US East for the actual request work. There's no warm replica of your tool in APAC.
+
+## Choosing a region
+
+For most tools today: **you can't, and you don't need to**. The default works.
+
+The reason Vendo doesn't expose a region picker per deployment is that multi-region adds operational surface that, for the audience and workloads currently on the platform, costs more than it gains. If a tool genuinely needs to live in EU-West for data residency or low-latency to European users, that's a conversation to have with the Vendo team — not something to surface in a manifest field today.
+
+## Region you should care about: where users hit your URL
+
+Browsers hit a `*.vendo.run` domain. That domain resolves through Cloudflare DNS, the TLS handshake terminates at the nearest PoP, and the app-proxy makes the request to your backend. For static assets served by Cloudflare Workers (frontend tools), this is genuinely edge-served and fast everywhere.
+
+For backend requests (Railway tools), the request *path* is global but the actual computation happens in US East. Round-trip latency from EU is ~80–120ms, from APAC ~200–300ms.
+
+If your tool is latency-sensitive for non-US users, the things that help:
+
+- Use the Vendo proxy for LLM calls — the proxy itself is at the edge, so you don't pay the trans-Atlantic hop twice.
+- Cache aggressively at the edge for read-heavy responses (set `Cache-Control` headers; the app-proxy doesn't strip them).
+- Move expensive computation off the request path (queue + worker) so the user's wait is just the queue ack.
+
+What doesn't help: trying to spin up your own multi-region setup inside a single Vendo deployment. There's one container; that container is in one region.
+
+## Data residency
+
+For tools handling EU data with GDPR-bound residency requirements, the default US East setup is not appropriate. There's no toggle to switch a deployment to EU today. If you're shipping a tool intended for that market, raise it before you ship; the answer isn't a config change, it's a platform conversation.
+
+## Related
+
+- [Isolation](/docs/infrastructure/isolation) — what's per-tenant vs shared, separate from where things live geographically.
+- [Scaling and limits](/docs/infrastructure/scaling-and-limits) — the other ceiling: resource, not location.

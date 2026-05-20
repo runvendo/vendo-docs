@@ -1,0 +1,85 @@
+---
+title: Logs and observability
+description: Where logs surface for a tool author, retention, and how to find what you need when something is wrong.
+---
+
+When your tool misbehaves on Vendo, there are three logical surfaces to look at. They each tell you a different part of the story; you'll often need two of them interleaved to see the full picture.
+
+## The three surfaces
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│ Browser ─────────► App-proxy ─────────► Your container         │
+│                    (Cloudflare logs)    (Railway logs)         │
+│                                                                │
+│              ┌──► Provider proxy ─────► Upstream provider      │
+│              │    (Cloudflare logs)                            │
+│              │                                                 │
+│ Provider ────┘──► Hooks worker ───────► Your container         │
+│   webhook         (Cloudflare logs)                            │
+└────────────────────────────────────────────────────────────────┘
+```
+
+1. **Your container's logs** — what your code wrote to stdout / stderr. Visible in the Vendo dashboard under your deployment's **Logs** tab. This is the surface you'll use 90% of the time.
+2. **Deploy logs** — output from the deploy workflow itself (build, provision, health-check). In the **Deploys** tab under each historical deploy attempt.
+3. **Edge logs** — what the app-proxy or a provider proxy saw. Not directly exposed to tool authors. If you suspect the proxy is the culprit, file a support request with timestamps and a request ID.
+
+## What "your container's logs" actually means
+
+For Railway-hosted tools, your service's stdout/stderr is streamed by Railway and tailed into the dashboard. You can also tail historical logs (anything written while the container was up). When the container restarts — manually, via upgrade, via crash — the previous instance's logs remain accessible under that prior deploy ID.
+
+For Cloudflare Workers / Pages tools, logs come from CF's logpush; the dashboard surfaces them under the same Logs tab.
+
+## Retention
+
+| Surface | Retention |
+|---|---|
+| Container logs (Railway) | Around 7 days, then rolled off by Railway |
+| Deploy logs (Postgres) | Indefinite — every deploy attempt's progress + error rows are kept |
+| Provider proxy logs (Cloudflare) | Not exposed; ~7 days internally for incident response |
+
+If you need a longer paper trail (audit, compliance), write your own application logs to an external sink: Logtail, BetterStack, an S3 bucket via R2, etc. Vendo doesn't ship a hosted log archive.
+
+## Structured logging conventions
+
+Vendo's own services emit JSON to stdout with a few standard keys:
+
+```json
+{
+  "level": "info",
+  "msg": "deploy.phase_complete",
+  "deployment_id": "dep_***",
+  "phase": "deploy_compute",
+  "duration_ms": 4321
+}
+```
+
+You're free to log however you want in your tool, but JSON-with-`level` keeps you compatible with future filtering features in the dashboard. Plain-text `console.log` works too — just less filterable.
+
+Two practices that pay off:
+
+- **Include a correlation ID.** If your tool receives a webhook and then fires an LLM call and then writes to a DB, tag each log line with the same ID. Without it, debugging cross-component flows is misery.
+- **Don't log secrets.** The dashboard renders logs verbatim. If you log a connection token, anyone with deployment-read access in your tenant will see it.
+
+## Where to look when X is broken
+
+| Symptom | Look at |
+|---|---|
+| Your tool returned 500 to a real user request | Container logs around the timestamp |
+| Your tool can't start (boot loop) | Container logs, then deploy logs if the issue is image-level |
+| Deploy stuck or failed | Deploys tab, expand the failed attempt |
+| `402` from a provider proxy | Dashboard → Billing (credits balance) |
+| `403` from a provider proxy | Dashboard → Connections (binding active?) |
+| Your URL serves a status page instead of your app | Deployment status (likely suspended) |
+| Healthcheck failing | Container logs + the manifest's `healthEndpoint` route |
+
+## Trace the path, not the layer
+
+The most common debugging mistake on Vendo is to look at one log surface and conclude the bug is elsewhere. The proxy sits between every external call and your tool; the app-proxy sits between every user and your tool. When you can't reproduce locally, the answer is usually in the path, not the endpoints.
+
+Start at the user-visible failure, walk backwards through the surfaces above, and don't stop at the first layer that *looks* fine.
+
+## Related
+
+- [Healthchecks](/docs/infrastructure/healthchecks) — the most common reason a deployment ends up in a bad state.
+- [The proxy](/docs/infrastructure/the-proxy) — status codes you might see from provider proxies.
