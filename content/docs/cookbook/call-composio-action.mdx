@@ -1,0 +1,108 @@
+---
+title: Call a Composio Action
+description: Run any Composio action against the tenant's connected accounts via vendo.data.execute.
+---
+
+`vendo.data.execute` runs any Composio action against the tenant's connected accounts. The proxy resolves the connected account, calls Composio, bills via the `composio.action_call` meter, and returns the result.
+
+Vendo mode only. Throws `VendoOnlyFeature` in OSS mode.
+
+---
+
+## Basic usage
+
+```python
+import vendo_sdk as vendo
+from vendo_sdk.errors import NotConnected, UpstreamError, VendoTimeout
+
+def send_slack_message(channel: str, text: str):
+    try:
+        result = vendo.data.execute(
+            "SLACK_SENDS_A_MESSAGE",
+            {
+                "channel": channel,
+                "text": text
+            }
+        )
+        return result
+    except NotConnected as e:
+        # User hasn't connected Slack
+        return {
+            "needs_connection": e.slug,
+            "connect_url": vendo.connect_url(e.slug)
+        }
+    except UpstreamError as e:
+        # Composio or Slack returned an error
+        return {"error": str(e)}
+    except VendoTimeout:
+        return {"error": "action_timed_out"}
+```
+
+```typescript
+import { Vendo, NotConnected, UpstreamError, VendoTimeout } from "@vendodev/sdk";
+
+const vendo = new Vendo();
+
+async function sendSlackMessage(channel: string, text: string) {
+  try {
+    const result = await vendo.data.execute("SLACK_SENDS_A_MESSAGE", {
+      channel,
+      text,
+    });
+    return result;
+  } catch (e) {
+    if (e instanceof NotConnected) {
+      return {
+        needsConnection: e.slug,
+        connectUrl: vendo.connectUrl(e.slug),
+      };
+    }
+    if (e instanceof UpstreamError) {
+      return { error: e.message };
+    }
+    if (e instanceof VendoTimeout) {
+      return { error: "action_timed_out" };
+    }
+    throw e;
+  }
+}
+```
+
+---
+
+## How the proxy resolves the connected account
+
+When you call `data.execute("SLACK_SENDS_A_MESSAGE", args)`:
+
+1. The proxy receives the request with your `VENDO_API_KEY` bearer token.
+2. It resolves the action name to a Composio toolkit (e.g. `SLACK_*` maps to the Slack toolkit).
+3. It looks up the connected account for the toolkit on your deployment's binding.
+4. It calls Composio with the resolved account and your `args`.
+5. Billing ticks one `composio.action_call` unit.
+6. The Composio response is returned as-is.
+
+If the toolkit's provider is not connected, the proxy returns `binding_missing` and the SDK raises `NotConnected`.
+
+---
+
+## Finding action names
+
+Action names follow the pattern `<PROVIDER>_<ACTION_DESCRIPTION>` in SCREAMING_SNAKE_CASE. Examples:
+
+| Provider | Action name |
+|---|---|
+| Slack | `SLACK_SENDS_A_MESSAGE` |
+| Notion | `NOTION_CREATE_PAGE` |
+| Gmail | `GMAIL_SEND_EMAIL` |
+| Supabase | `SUPABASE_BETA_RUN_SQL_QUERY` |
+| GitHub | `GITHUB_CREATE_AN_ISSUE` |
+
+Find the full list at [composio.dev](https://composio.dev) or by browsing the Composio toolkit registry.
+
+---
+
+## Notes
+
+- `args` is passed through to Composio without transformation. Check the Composio docs for each action's required fields.
+- In the customize-sandbox, the default timeout is 5s. Long-running Composio actions (e.g. queries on large datasets) may need `VENDO_TIMEOUT_MS` raised. See [sandbox/gotchas](/docs/sandbox/gotchas).
+- `data.execute` is for Composio-backed actions only. To read connection metadata or credentials, use `connections.get` instead.

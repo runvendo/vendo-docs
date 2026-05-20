@@ -1,0 +1,97 @@
+---
+title: Poll Credit Balance
+description: Read the tenant's prepaid credit balance, gate expensive operations, and handle OSS mode gracefully.
+---
+
+`vendo.billing.balance()` returns the tenant's current prepaid credit balance. Use it to gate expensive operations, render a balance display, or trigger a low-balance warning.
+
+Vendo mode only. Raises `VendoOnlyFeature` in OSS mode — there is no billing backend when running outside Vendo.
+
+---
+
+## Read the balance
+
+```python
+import vendo_sdk as vendo
+from vendo_sdk.errors import VendoOnlyFeature
+
+def get_balance():
+    try:
+        balance = vendo.billing.balance()
+        return {
+            "available_usd": balance.available_usd,
+            "pending_usd": balance.pending_usd,
+        }
+    except VendoOnlyFeature:
+        # Running outside Vendo (local dev, OSS self-host)
+        return {"available_usd": None, "message": "billing not available in OSS mode"}
+```
+
+```typescript
+import { Vendo, VendoOnlyFeature } from "@vendodev/sdk";
+
+const vendo = new Vendo();
+
+async function getBalance() {
+  try {
+    const balance = await vendo.billing.balance();
+    return {
+      availableUsd: balance.availableUsd,
+      pendingUsd: balance.pendingUsd,
+    };
+  } catch (e) {
+    if (e instanceof VendoOnlyFeature) {
+      return { availableUsd: null, message: "billing not available in OSS mode" };
+    }
+    throw e;
+  }
+}
+```
+
+---
+
+## Gate a feature on available balance
+
+```python
+MIN_BALANCE_USD = 0.50
+
+def run_expensive_action():
+    try:
+        balance = vendo.billing.balance()
+    except VendoOnlyFeature:
+        balance = None
+
+    if balance is not None and balance.available_usd < MIN_BALANCE_USD:
+        return {"error": "insufficient_balance", "available_usd": balance.available_usd}
+
+    # Proceed with the action
+    return vendo.data.execute("SOME_EXPENSIVE_ACTION", {})
+```
+
+```typescript
+const MIN_BALANCE_USD = 0.50;
+
+async function runExpensiveAction() {
+  let balance = null;
+  try {
+    balance = await vendo.billing.balance();
+  } catch (e) {
+    if (!(e instanceof VendoOnlyFeature)) throw e;
+  }
+
+  if (balance !== null && balance.availableUsd < MIN_BALANCE_USD) {
+    return { error: "insufficient_balance", availableUsd: balance.availableUsd };
+  }
+
+  return vendo.data.execute("SOME_EXPENSIVE_ACTION", {});
+}
+```
+
+---
+
+## Notes
+
+- `balance()` is a live read — it reflects credits after pending charges are applied. Cache it for no longer than 30 seconds if you are polling it in a dashboard.
+- `BalanceExhausted` is raised automatically by the proxy when a metered operation would push the balance below zero. You do not need to check the balance before every `data.execute` call — the proxy enforces it.
+- `SpendCaps` can also block operations before the balance hits zero. Read spend caps with `vendo.billing.spend_caps()`.
+- The billing period is calendar-month UTC. `billing.usage(period="2026-05")` returns the breakdown for May 2026.

@@ -1,4 +1,12 @@
 {
   "title": "Cookbook",
-  "pages": ["index", "telegram-bot"]
+  "pages": [
+    "index",
+    "telegram-bot",
+    "read-supabase-users",
+    "call-composio-action",
+    "handle-not-connected",
+    "poll-balance",
+    "verify-webhook"
+  ]
 }

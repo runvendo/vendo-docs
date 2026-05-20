@@ -1,0 +1,23 @@
+---
+title: Sandbox
+description: Quirks, env vars, and debugging tips for code running inside a Vendo customize sandbox.
+---
+
+import { Card, Cards } from "fumadocs-ui/components/card";
+
+When you customize a tool through the Vendo UI, your edits run inside a per-deployment customize sandbox. The sandbox sets a handful of env vars at boot, runs the SDK in Vendo mode, and exposes MCP servers to the customize agent.
+
+If you're writing code that uses `vendo_sdk` or `@vendodev/sdk` inside that sandbox, the pages below cover the gotchas you'll hit and the env vars you can rely on.
+
+<Cards>
+  <Card
+    title="Gotchas"
+    description="The 10 things that bite agents writing SDK code in the sandbox."
+    href="/docs/sandbox/gotchas"
+  />
+  <Card
+    title="Runtime env vars"
+    description="Every env var the sandbox injects into your tool's processes."
+    href="/docs/sandbox/runtime-env-vars"
+  />
+</Cards>

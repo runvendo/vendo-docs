@@ -1,0 +1,97 @@
+---
+title: Verify a Webhook
+description: HMAC-verify an inbound Vendo webhook and react to connection events.
+---
+
+`vendo.webhooks.verify` checks the HMAC signature on an inbound Vendo webhook and returns the parsed event. It raises `ValidationError` on a bad or missing signature.
+
+This works in any mode (Vendo and OSS). Verification is entirely local — no network call. The secret comes from the `VENDO_WEBHOOK_SECRET` env var.
+
+---
+
+## FastAPI / ASGI
+
+```python
+from fastapi import FastAPI, Request, HTTPException
+import vendo_sdk as vendo
+from vendo_sdk.errors import ValidationError
+
+app = FastAPI()
+
+@app.post("/webhooks/vendo")
+async def handle_webhook(request: Request):
+    body = await request.body()
+    try:
+        event = vendo.webhooks.verify(dict(request.headers), body)
+    except ValidationError:
+        raise HTTPException(status_code=400, detail="invalid signature")
+
+    if event.kind == "connection.connected":
+        slug = event.payload.get("slug")
+        # Invalidate the cached token so the next call re-fetches
+        vendo.invalidate(slug)
+
+    return {"ok": True}
+```
+
+```typescript
+import { Vendo, ValidationError } from "@vendodev/sdk";
+
+const vendo = new Vendo();
+
+// Next.js App Router route handler
+export async function POST(request: Request) {
+  const rawBody = await request.text();
+  const headers = Object.fromEntries(request.headers.entries());
+
+  let event;
+  try {
+    event = vendo.webhooks.verify(headers, rawBody);
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      return Response.json({ error: "invalid signature" }, { status: 400 });
+    }
+    throw e;
+  }
+
+  if (event.kind === "connection.connected") {
+    const slug = event.payload["slug"] as string;
+    vendo.invalidate(slug);
+  }
+
+  return Response.json({ ok: true });
+}
+```
+
+---
+
+## How signature verification works
+
+Vendo signs every outbound webhook with HMAC-SHA256 using the deployment's `VENDO_WEBHOOK_SECRET`. The signature is sent in the `X-Vendo-Signature` header as `sha256=<hex-digest>`.
+
+`webhooks.verify`:
+1. Reads `X-Vendo-Signature` from headers.
+2. Computes `HMAC-SHA256(VENDO_WEBHOOK_SECRET, body)`.
+3. Compares the two. Raises `ValidationError` if they don't match or if the header is missing.
+4. Parses the body as JSON and returns a `WebhookEvent`.
+
+The body must be the raw bytes / string before any JSON parsing. Do not parse the body before passing it to `verify`.
+
+---
+
+## Common event kinds
+
+| Kind | Payload fields | What to do |
+|---|---|---|
+| `connection.connected` | `slug`, `deployment_id` | Call `vendo.invalidate(slug)` to clear the token cache. |
+| `connection.disconnected` | `slug`, `deployment_id` | Update any UI that shows the connection status. |
+| `connection.needs_reauth` | `slug`, `deployment_id`, `error_message` | Notify the user to reconnect. |
+| `billing.low_balance` | `available_usd`, `threshold_usd` | Trigger a top-up or send an alert. |
+
+---
+
+## Notes
+
+- `VENDO_WEBHOOK_SECRET` is per-deployment. In Vendo mode Vendo injects it automatically. In OSS mode you set it yourself.
+- Keep a 5-minute replay window in mind: Vendo signs with a timestamp, and `verify` rejects signatures older than 5 minutes to prevent replay attacks.
+- The `body` argument must be the raw request body (bytes or string). Parse it yourself only after `verify` returns.

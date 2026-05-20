@@ -1,4 +1,10 @@
 {
   "title": "SDK Reference",
-  "pages": ["python", "typescript", "swift"]
+  "pages": [
+    "python",
+    "python/reference",
+    "typescript",
+    "typescript/reference",
+    "swift"
+  ]
 }
