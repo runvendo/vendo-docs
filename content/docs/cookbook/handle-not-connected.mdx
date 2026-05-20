@@ -12,22 +12,18 @@ description: Surface a structured needs_connection payload so the frontend can r
 ## Catch NotConnected from data.execute
 
 ```python
-import vendo_sdk as vendo
-from vendo_sdk.errors import NotConnected
+import vendo
+from vendo.errors import NotConnected
 
-def run_stripe_action():
+def run_stripe_action(client):
     try:
-        result = vendo.data.execute(
-            "STRIPE_LIST_CUSTOMERS",
-            {"limit": 10}
-        )
-        return {"customers": result}
+        return {"customers": client.data.execute("STRIPE_LIST_CUSTOMERS", {"limit": 10})}
     except NotConnected as e:
-        # e.slug is "stripe"
-        # e.suggested_env_vars is ["STRIPE_API_KEY"] in OSS mode
+        # e.slug is the missing provider, "stripe" here.
+        slug = e.slug or "stripe"
         return {
-            "needs_connection": e.slug,
-            "connect_url": vendo.connect_url(e.slug),
+            "needs_connection": slug,
+            "connect_url": vendo.connect_url(slug),
         }
 ```
 
@@ -38,14 +34,13 @@ const vendo = new Vendo();
 
 async function runStripeAction() {
   try {
-    const result = await vendo.data.execute("STRIPE_LIST_CUSTOMERS", { limit: 10 });
-    return { customers: result };
+    return { customers: await vendo.data.execute("STRIPE_LIST_CUSTOMERS", { limit: 10 }) };
   } catch (e) {
     if (e instanceof NotConnected) {
-      // e.slug === "stripe"
+      const slug = e.slug ?? "stripe";
       return {
-        needsConnection: e.slug,
-        connectUrl: vendo.connectUrl(e.slug),
+        needsConnection: slug,
+        connectUrl: vendo.connectUrl(slug),
       };
     }
     throw e;
@@ -88,8 +83,8 @@ After the user connects, the portal closes and fires a `connection.connected` we
 
 | Field | Type | Description |
 |---|---|---|
-| `slug` | `str` | The provider slug that is not connected, e.g. `"stripe"`. |
-| `suggested_env_vars` | `list[str]` | In OSS mode: env var names to set to connect this provider. Empty in Vendo mode. |
+| `slug` | `str \| None` | The provider slug that is not connected, e.g. `"stripe"`. Optional — fall back to a known slug if absent. |
+| `connect_url` | `str \| None` | Pre-computed connect URL, when the proxy was able to build one. |
 | `message` | `str` | Human-readable message. |
 
 ---

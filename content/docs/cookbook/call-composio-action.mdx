@@ -12,56 +12,42 @@ Vendo mode only. Throws `VendoOnlyFeature` in OSS mode.
 ## Basic usage
 
 ```python
-import vendo_sdk as vendo
-from vendo_sdk.errors import NotConnected, UpstreamError, VendoTimeout
+import vendo
+from vendo.errors import NotConnected, UpstreamError
 
-def send_slack_message(channel: str, text: str):
+def send_slack_message(client, channel: str, text: str):
     try:
-        result = vendo.data.execute(
+        return client.data.execute(
             "SLACK_SENDS_A_MESSAGE",
-            {
-                "channel": channel,
-                "text": text
-            }
+            {"channel": channel, "text": text},
         )
-        return result
     except NotConnected as e:
-        # User hasn't connected Slack
-        return {
-            "needs_connection": e.slug,
-            "connect_url": vendo.connect_url(e.slug)
-        }
+        # User hasn't connected Slack — point them at the connect URL.
+        slug = e.slug or "slack"
+        return {"needs_connection": slug, "connect_url": vendo.connect_url(slug)}
     except UpstreamError as e:
         # Composio or Slack returned an error
         return {"error": str(e)}
-    except VendoTimeout:
-        return {"error": "action_timed_out"}
 ```
 
 ```typescript
-import { Vendo, NotConnected, UpstreamError, VendoTimeout } from "@vendodev/sdk";
+import { Vendo, NotConnected, UpstreamError } from "@vendodev/sdk";
 
 const vendo = new Vendo();
 
 async function sendSlackMessage(channel: string, text: string) {
   try {
-    const result = await vendo.data.execute("SLACK_SENDS_A_MESSAGE", {
-      channel,
-      text,
-    });
-    return result;
+    return await vendo.data.execute("SLACK_SENDS_A_MESSAGE", { channel, text });
   } catch (e) {
     if (e instanceof NotConnected) {
+      const slug = e.slug ?? "slack";
       return {
-        needsConnection: e.slug,
-        connectUrl: vendo.connectUrl(e.slug),
+        needsConnection: slug,
+        connectUrl: vendo.connectUrl(slug),
       };
     }
     if (e instanceof UpstreamError) {
       return { error: e.message };
-    }
-    if (e instanceof VendoTimeout) {
-      return { error: "action_timed_out" };
     }
     throw e;
   }
@@ -104,5 +90,5 @@ Find the full list at [composio.dev](https://composio.dev) or by browsing the Co
 ## Notes
 
 - `args` is passed through to Composio without transformation. Check the Composio docs for each action's required fields.
-- In the customize-sandbox, the default timeout is 5s. Long-running Composio actions (e.g. queries on large datasets) may need `VENDO_TIMEOUT_MS` raised. See [sandbox/gotchas](/docs/sandbox/gotchas).
+- `NotConnected.slug` is the provider slug the binding is missing for. It's optional on the error type — fall back to a known slug if it's absent.
 - `data.execute` is for Composio-backed actions only. To read connection metadata or credentials, use `connections.get` instead.

@@ -27,3 +27,11 @@ next-env.d.ts
 # OS
 .DS_Store
 Thumbs.db
+
+# docs-examples-ci scratch
+scripts/check-examples/.tmp/
+scripts/check-examples/.venv-mypy/
+scripts/check-examples/node_modules/
+scripts/check-examples/package.json
+scripts/check-examples/package-lock.json
+scripts/check-examples/.vendor/

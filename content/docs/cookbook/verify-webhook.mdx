@@ -12,26 +12,22 @@ This works in any mode (Vendo and OSS). Verification is entirely local — no ne
 ## FastAPI / ASGI
 
 ```python
-from fastapi import FastAPI, Request, HTTPException
-import vendo_sdk as vendo
-from vendo_sdk.errors import ValidationError
+import vendo
+from vendo.errors import ValidationError
 
-app = FastAPI()
-
-@app.post("/webhooks/vendo")
-async def handle_webhook(request: Request):
-    body = await request.body()
+def handle_webhook(headers: dict, body: bytes) -> dict:
     try:
-        event = vendo.webhooks.verify(dict(request.headers), body)
+        event = vendo.webhooks.verify(headers, body)
     except ValidationError:
-        raise HTTPException(status_code=400, detail="invalid signature")
+        return {"status": 400, "error": "invalid signature"}
 
-    if event.kind == "connection.connected":
-        slug = event.payload.get("slug")
-        # Invalidate the cached token so the next call re-fetches
-        vendo.invalidate(slug)
+    # event.type is the event kind; event.data is the typed payload.
+    if event.type == "connection.connected":
+        slug = event.data.get("slug")
+        if isinstance(slug, str):
+            vendo.invalidate(slug)
 
-    return {"ok": True}
+    return {"status": 200, "ok": True, "event_id": event.id, "at": event.occurred_at}
 ```
 
 ```typescript
@@ -39,7 +35,7 @@ import { Vendo, ValidationError } from "@vendodev/sdk";
 
 const vendo = new Vendo();
 
-// Next.js App Router route handler
+// Next.js App Router route handler.
 export async function POST(request: Request) {
   const rawBody = await request.text();
   const headers = Object.fromEntries(request.headers.entries());
@@ -54,12 +50,14 @@ export async function POST(request: Request) {
     throw e;
   }
 
-  if (event.kind === "connection.connected") {
-    const slug = event.payload["slug"] as string;
-    vendo.invalidate(slug);
+  if (event.type === "connection.connected") {
+    const slug = event.data["slug"];
+    if (typeof slug === "string") {
+      vendo.invalidate(slug);
+    }
   }
 
-  return Response.json({ ok: true });
+  return Response.json({ ok: true, eventId: event.id, at: event.occurredAt });
 }
 ```
 
@@ -79,14 +77,14 @@ The body must be the raw bytes / string before any JSON parsing. Do not parse th
 
 ---
 
-## Common event kinds
+## Common event types
 
-| Kind | Payload fields | What to do |
+| `event.type` | `event.data` fields | What to do |
 |---|---|---|
 | `connection.connected` | `slug`, `deployment_id` | Call `vendo.invalidate(slug)` to clear the token cache. |
 | `connection.disconnected` | `slug`, `deployment_id` | Update any UI that shows the connection status. |
 | `connection.needs_reauth` | `slug`, `deployment_id`, `error_message` | Notify the user to reconnect. |
-| `billing.low_balance` | `available_usd`, `threshold_usd` | Trigger a top-up or send an alert. |
+| `billing.low_balance` | `credits_remaining_micros`, `threshold_micros` | Trigger a top-up or send an alert. |
 
 ---
 
