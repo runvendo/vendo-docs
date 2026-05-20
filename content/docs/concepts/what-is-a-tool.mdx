@@ -1,0 +1,67 @@
+---
+title: What is a tool
+description: A tool is one catalog entry that a tenant can install — the three tool types and when to pick which.
+---
+
+import { Card, Cards } from "fumadocs-ui/components/card";
+import { Callout } from "fumadocs-ui/components/callout";
+
+A **tool** in Vendo is one entry in the public catalog. Tenants install tools; you build them. Everything else in this section — connections, the proxy, billing — exists in service of that installation flow.
+
+Each tool has a canonical `slug` (e.g. `hermes`, `twenty`) that is the single name for it across the platform: catalog listing, install URL, proxy adapter, runtime env vars. Pick it once; it does not change.
+
+## The three tool types
+
+Vendo recognises three tool types. They share a manifest format and an SDK, but the runtime model differs.
+
+| Type | What it is | Who hosts it | Typical example |
+|---|---|---|---|
+| `deployment` | A server-side app | Vendo (on Railway) | A CRM, a Telegram bot, a workflow engine |
+| `downloadable` | A desktop app the user installs locally | The user's machine | A voice assistant, a menubar utility |
+| `npm` | A CLI installed with `npm install -g` | The user's machine | A scaffolding tool, a one-off automation |
+
+Only `deployment` tools are hosted by Vendo. The other two run on the tenant's hardware — Vendo issues proxy keys and brokers credentials, but compute and lifecycle are the user's.
+
+## Picking a type
+
+<Cards>
+  <Card
+    title="Pick deployment"
+    description="If you need a long-running server, a database, a public URL, or to receive webhooks."
+  />
+  <Card
+    title="Pick downloadable"
+    description="If your app needs the user's local file system, microphone, or OS-level integration."
+  />
+  <Card
+    title="Pick npm"
+    description="If your tool is a CLI a developer runs against their own projects."
+  />
+</Cards>
+
+When in doubt, choose `deployment`. It's the path with the most batteries included: a public `{deployment_slug}.{tenant_slug}.vendo.run` URL, auto-provisioned TLS, env-var injection from connections, healthchecks, suspend/resume on credit exhaustion, and rollups in the tenant's billing dashboard. The other two types skip parts of this — you trade convenience for direct access to the user's machine.
+
+## What a tenant sees vs what you author
+
+A tenant installing your tool sees a wizard: pick a name, connect the integrations you require, pay (or not), launch. That wizard, the listing copy, the env var names, the pricing label — all of it comes from one file in your repo: `vendo.yaml`. The catalog row, the active release pointer, and the per-tenant install record live in Vendo's database, but you never write them by hand. You change `vendo.yaml`, cut a release, and Vendo's catalog sync picks it up.
+
+The full schema lives under [Reference](/docs/reference); the authoring walkthrough lives under [Build a tool](/docs/build-a-tool).
+
+## Releases vs installs
+
+It helps to separate two things:
+
+- **A release** is one immutable version of your tool — manifest, wizard layout, container image, required integrations. Only one release is active at a time. Tenants installing today get the active release; tenants who installed last week keep running the release they installed against.
+- **An install** (Vendo calls this a *deployment* for `deployment`-type tools) is one tenant's running copy. It snapshot-copies the manifest at install time so a release edit can't break in-flight tenants. Upgrades are explicit.
+
+This separation is why a tenant can stay on a working version of your tool while you ship breaking changes behind a new release.
+
+## Public vs private
+
+A tool doesn't have to be in the public catalog. You can deploy a tool privately — flagged `marketing.internal = true` — and only your workspace will see it. The publish flow is one bit on the manifest, not a different code path. Most authors start private, dogfood for a week, then flip the flag.
+
+The "publish to catalog" pipeline (template repo, release versioning, rollout) is covered under [Deploy & publish](/docs/deploy-and-publish).
+
+<Callout type="info">
+  The same SDK, the same `vendo.yaml`, the same proxy authentication work across all three tool types. You don't pick "type" up front and lose access to features later — you pick where the code runs.
+</Callout>
