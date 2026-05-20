@@ -1,0 +1,96 @@
+---
+title: HTTP API
+description: The Vendo HTTP API surface at vendo.run/api — what the SDKs and CLI call under the hood.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The Vendo SDKs and CLI talk to the platform over the HTTP API documented in this section. You usually don't call these endpoints directly — the [Python](/docs/reference/sdk/python) and [TypeScript](/docs/reference/sdk/typescript) SDKs wrap them — but they're worth knowing for debugging, building thin clients, or writing in a language without a first-party SDK yet.
+
+## Base URL
+
+```
+https://vendo.run
+```
+
+All endpoints documented here are rooted at that origin. The `/api/v1/*` prefix is the canonical, CORS-enabled, tenant-scoped surface. Other paths (`/api/deployments/me/*`, `/api/cli/*`) target specific callers and may not allow cross-origin browser access.
+
+## Auth model
+
+Vendo accepts four distinct credentials, with strict rules about which endpoints accept which:
+
+| Credential | Header | Issued by | Scope |
+|---|---|---|---|
+| **App Key** (`vendo_sk_*`) | `Authorization: Bearer …` | Deploy flow, one per deployment | One app — multiple connections via bindings |
+| **Connection Key** (`vendo_sk_*`) | `Authorization: Bearer …` | `POST /api/connections/{id}/keys` | One connection, one provider |
+| **Identity token** (JWT) | `Authorization: Bearer …` | Supabase OAuth at `auth.vendo.run` | User identity, 1 hour |
+| **Session cookie** | Browser cookies | `vendo.run` sign-in flow | Dashboard user |
+
+Format detection on Bearer tokens is dot-segment count: a JWT has exactly three dot-separated base64url segments; opaque `vendo_sk_*` keys never do.
+
+### Endpoint auth matrix
+
+| Endpoint | App Key | Connection Key | Identity JWT | Session cookie |
+|---|---|---|---|---|
+| `GET /api/v1/balance` | yes | yes | yes | no |
+| `GET /api/deployments/me/connections` | yes | no | no | no |
+| `GET /api/deployments/me/events` | yes | no | no | no |
+| `GET /api/cli/balance` | yes | yes | no | no |
+| `POST /api/cli/exchange` | exchanges PKCE code | n/a | no | no |
+| `POST /api/cli/authorize`, `GET /api/cli/keys`, `GET /api/cli/apps`, `POST /api/cli/revoke`, `POST /api/cli/ssh/{deployment}` | no | no | no | yes |
+| `POST /api/deploy` | no | no | no | yes |
+| `GET /api/auth/me` | no | no | no | yes (or anonymous) |
+
+<Callout type="warn">
+  `/api/deployments/me/*` only accepts an **App Key**. Connection-scoped keys are rejected even though they share the same `vendo_sk_*` prefix — these endpoints need an `app_id` to resolve bindings.
+</Callout>
+
+## Errors
+
+Errors return a JSON body with an `error` object:
+
+```json
+{ "error": { "message": "Missing Bearer token" } }
+```
+
+Common status codes:
+
+| Status | Meaning |
+|---|---|
+| `401` | Missing, malformed, revoked, or expired Bearer token |
+| `402` | Tenant out of credits (only on metered provider proxy routes) |
+| `403` | Authenticated but not permitted (e.g. App Key has no binding for the requested provider) |
+| `404` | Resource not found |
+| `409` | Conflict (e.g. duplicate deployment slug) |
+| `429` | Rate limit exceeded |
+| `5xx` | Vendo bug — please report |
+
+## CORS
+
+`/api/v1/*` reflects `*.vendo.run` origins with `Vary: Origin`; other origins get `*`. Allowed methods: `GET, OPTIONS`. Allowed headers: `Authorization, Content-Type`. Safe because every endpoint requires a Bearer token.
+
+Other surfaces (`/api/deployments/me/*`, `/api/cli/*`) do not enable cross-origin browser access — call them from your server or via the SDK.
+
+## Conventions
+
+- **JSON only.** Requests and responses are `application/json` except SSE channels.
+- **Timestamps** are ISO 8601 with `Z` suffix unless otherwise noted.
+- **Money** is USD with two-decimal precision unless documented as `micros` (USD × 10⁶, integer).
+- **Single-shot, not polled.** Connection state changes surface to a deployment when it restarts and re-reads, or via the [events](events) SSE channel.
+
+## Rate limits
+
+Per-IP limiters apply to a handful of public endpoints:
+
+| Endpoint | Limit |
+|---|---|
+| `GET /api/v1/balance` | 60 req/min |
+| `GET /api/cli/balance` | 30 req/min |
+
+Other endpoints rely on key-level revocation and proxy-level spend caps.
+
+## See also
+
+- [vendo.yaml schema](/docs/reference/vendo-yaml-schema) — deploy-time manifest
+- [SDK reference](/docs/reference/sdk) — Python, TypeScript, Swift
+- [CLI reference](/docs/reference/cli) — the `vendo` command

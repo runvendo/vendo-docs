@@ -1,0 +1,83 @@
+---
+title: Billing
+description: Read the tenant's credit balance.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## `GET /api/v1/balance`
+
+Returns the tenant's prepaid credit balance in USD. This is the endpoint the SDK's `billing.balance()` wraps, and also what the CLI's `vendo whoami` reads.
+
+### Auth
+
+Accepts two Bearer formats:
+
+- **Vendo proxy key** (`vendo_sk_*`) — App Key or Connection Key. Tenant is read from the resolved key row.
+- **Supabase identity JWT** — issued by `auth.vendo.run`. JWKS-verified at `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`. JWKS is cached 10 minutes with one-shot refetch on `kid` miss. `exp` is enforced.
+
+Format detection is dot-segment count: opaque proxy keys never parse as JWTs.
+
+### Request
+
+```http
+GET /api/v1/balance HTTP/1.1
+Host: vendo.run
+Authorization: Bearer <vendo_sk_… or JWT>
+```
+
+### Response: `200 OK`
+
+```json
+{
+  "balance_usd": 12.5,
+  "tenant_id": "t_abc"
+}
+```
+
+`balance_usd` is rounded to two decimals. Sourced from `wallets.balance_usd`.
+
+### CORS
+
+Cross-origin: `*.vendo.run` origins are reflected with `Vary: Origin`; other origins get `*`. Methods `GET, OPTIONS`. Headers `Authorization, Content-Type`.
+
+### Rate limit
+
+60 requests per minute per IP. Exceeding returns `429`:
+
+```json
+{ "error": { "message": "Rate limit exceeded" } }
+```
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `401` | `{ "error": { "message": "Missing Bearer token" } }` | No `Authorization` header |
+| `401` | `{ "error": { "message": "Invalid or revoked token" } }` | Token unknown, revoked, or expired |
+| `429` | `{ "error": { "message": "Rate limit exceeded" } }` | Over 60/min per IP |
+| `500` | `{ "error": { "message": "Internal server error" } }` | Vendo bug |
+
+### Edge cases
+
+- **Zero, negative, or no wallet** all return `200`. Negative `balance_usd` means the tenant is overdrawn (rare — usually a non-blocking billing race).
+- **Suspended tenants** still return `200`. Status enforcement happens at the app-proxy layer, not here. A suspended tenant can read their balance to know whether a top-up will resume them.
+
+## `GET /api/cli/balance`
+
+Same response shape as `/api/v1/balance`, restricted to `vendo_sk_*` keys (no JWT path). Rate-limited 30 req/min per IP. Used by the CLI to populate `vendo whoami`.
+
+## Per-deployment usage
+
+`GET /api/deployments/{id}/usage` returns hourly cost rollups for a specific deployment. **Owner-only**, authenticated via the dashboard session cookie — not exposed to deployed tools or external SDKs. Used by the dashboard usage charts. Query parameter `range` accepts `1h | 24h | 7d | 30d` (default `24h`).
+
+Response shape includes `providers` (bucketed metrics), `periods` (hourly breakdowns with meter-level cost), and `summary` (total cost + by-meter aggregate). See [`web/src/app/api/deployments/[id]/usage/route.ts`](https://github.com/runvendo/vendo/blob/main/web/src/app/api/deployments/%5Bid%5D/usage/route.ts) for the full shape.
+
+<Callout type="info">
+  Reading the balance is **advisory only**. The proxy is the enforcer — it returns `402` on any metered call past zero, whether or not your tool checked first. The reason to read the balance is UX: showing a banner before a long-running operation.
+</Callout>
+
+### Related
+
+- [Credits and billing concepts](/docs/concepts/credits-and-billing)
+- [SDK > billing.balance()](/docs/reference/sdk)

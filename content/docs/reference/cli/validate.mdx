@@ -1,0 +1,74 @@
+---
+title: vendo validate
+description: Lint a vendo.yaml manifest against the public deploy schema.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Synopsis
+
+```bash
+vendo validate [file]
+```
+
+Validates a `vendo.yaml` against the canonical JSON Schema bundled with the CLI. Defaults to `./vendo.yaml` when no argument is passed. Exits `0` on success, non-zero on any error.
+
+This command does **not** require login — the schema check is fully local.
+
+## Arguments
+
+| Argument | Description |
+|---|---|
+| `file` | Optional path to the manifest. Defaults to `vendo.yaml` in the current directory. |
+
+## Schema source
+
+The validator uses [`vendo.schema.json`](https://github.com/runvendo/vendo-cli/blob/master/src/lib/vendo.schema.json), JSON Schema draft 7, executed via `ajv`. The same schema is what the Vendo deploy worker checks against — the CLI is just a local mirror.
+
+Full per-field reference: [vendo.yaml schema](/docs/reference/vendo-yaml-schema).
+
+## Output
+
+On success:
+
+```
+✓ vendo.yaml is valid
+```
+
+On failure, every problem is listed:
+
+```
+✗ vendo.yaml has 2 error(s):
+  • /name must match pattern "^[a-z][a-z0-9-]{1,62}[a-z0-9]$"
+  • /version must be equal to constant: 1
+```
+
+## Examples
+
+Validate the default file:
+
+```bash
+vendo validate
+```
+
+Validate a non-default path:
+
+```bash
+vendo validate ./examples/hermes/vendo.yaml
+```
+
+Use in CI:
+
+```yaml
+# .github/workflows/ci.yml
+- run: npx @vendodev/cli validate
+```
+
+<Callout type="info">
+  `vendo validate` is the only CLI command that doesn't talk to vendo.run. It is safe to run in CI without provisioning a service account or login secret.
+</Callout>
+
+## Related
+
+- [vendo.yaml schema](/docs/reference/vendo-yaml-schema)
+- [Build a tool](/docs/build-a-tool)

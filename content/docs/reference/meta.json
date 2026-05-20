@@ -1,4 +1,4 @@
 {
   "title": "Reference",
-  "pages": ["index", "sdk"]
+  "pages": ["index", "sdk", "vendo-yaml-schema", "http-api", "cli"]
 }

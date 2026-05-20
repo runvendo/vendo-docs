@@ -1,0 +1,219 @@
+---
+title: vendo.yaml schema
+description: Every field of the deploy-time manifest — type, required, default, example.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+`vendo.yaml` is the deploy-time manifest at the root of your repo. The Vendo CLI and dashboard read it to discover your app's integrations, env vars, and health-check shape. The Vendo SDK itself does not read `vendo.yaml` — runtime config flows through env vars.
+
+Authoring guidance with examples lives under [Build a tool > vendo.yaml authoring](/docs/build-a-tool). This page is the field-by-field reference.
+
+<Callout type="info">
+  The canonical machine-readable schema is [`vendo.schema.json`](https://github.com/runvendo/vendo-cli/blob/master/src/lib/vendo.schema.json) in the `vendo-cli` repo. `vendo validate ./vendo.yaml` runs `ajv` against that file. If this page and the JSON Schema disagree, the JSON Schema wins.
+</Callout>
+
+## At a glance
+
+```yaml
+name: hermes-bot          # required, slug-like
+version: 1                # required, schema version
+runtime: python           # optional
+integrations:             # optional, integration slugs from the Vendo catalog
+  - openai
+  - telegram
+env:                      # optional
+  required:
+    - DATABASE_URL
+  optional:
+    - LOG_LEVEL
+health:                   # optional
+  path: /healthz
+  port: 8080
+restart_on:               # optional
+  - openai
+```
+
+`additionalProperties` is `false` at the top level — unknown keys fail `vendo validate`.
+
+## Fields
+
+### `name` (required)
+
+| | |
+|---|---|
+| Type | `string` |
+| Pattern | `^[a-z][a-z0-9-]{1,62}[a-z0-9]$` |
+| Length | 3–64 characters |
+
+Slug-like app name. Lowercase letters, digits, hyphens. Must start with a letter and end with a letter or digit.
+
+```yaml
+name: my-cool-tool
+```
+
+### `version` (required)
+
+| | |
+|---|---|
+| Type | `integer` |
+| Allowed values | `1` |
+
+Manifest schema version. Currently must be `1`. Reserved for breaking schema changes in the future.
+
+```yaml
+version: 1
+```
+
+### `runtime`
+
+| | |
+|---|---|
+| Type | `string` |
+| Allowed values | `python`, `node`, `go`, `rust`, `ruby`, `java`, `other` |
+| Required | no |
+
+Hint about your app's primary runtime. Informational today — Vendo deploys are container-based and read the runtime from your image, not from this field. Useful for tooling and catalog filtering.
+
+```yaml
+runtime: python
+```
+
+### `integrations`
+
+| | |
+|---|---|
+| Type | `array<string>` |
+| Item pattern | `^[a-z][a-z0-9_-]*$` |
+| Unique items | yes |
+| Required | no |
+
+Integration slugs your tool wants from Vendo's catalog. When a tenant binds a connection for one of these slugs at deploy time, the deploy worker injects per-provider env vars (e.g. `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`) into your container. Slugs must match Vendo's integration catalog — see [Integrations](/docs/integrations) for the supported list.
+
+```yaml
+integrations:
+  - openai
+  - telegram
+  - elevenlabs
+```
+
+### `env`
+
+| | |
+|---|---|
+| Type | `object` |
+| Required | no |
+
+Declares env vars your container expects. Used for documentation and CI checks — the deploy worker does not enforce that every `env.required` entry is set, but the deploy wizard surfaces them.
+
+#### `env.required`
+
+| | |
+|---|---|
+| Type | `array<string>` |
+| Item pattern | `^[A-Z][A-Z0-9_]*$` |
+| Unique items | yes |
+
+UPPER_SNAKE env var names your app needs to start.
+
+#### `env.optional`
+
+| | |
+|---|---|
+| Type | `array<string>` |
+| Item pattern | `^[A-Z][A-Z0-9_]*$` |
+| Unique items | yes |
+
+UPPER_SNAKE env var names your app can use but does not require.
+
+```yaml
+env:
+  required:
+    - DATABASE_URL
+    - SESSION_SECRET
+  optional:
+    - LOG_LEVEL
+    - SENTRY_DSN
+```
+
+### `health`
+
+| | |
+|---|---|
+| Type | `object` |
+| Required | no |
+
+How Vendo health-checks your container.
+
+#### `health.path`
+
+| | |
+|---|---|
+| Type | `string` |
+| Pattern | `^/` (must start with `/`) |
+| Default | `/healthz` |
+
+HTTP path Vendo probes. Should return `200` when the app is ready to serve traffic.
+
+#### `health.port`
+
+| | |
+|---|---|
+| Type | `integer` |
+| Range | `1`–`65535` |
+| Default | `$PORT` (assigned by the compute provider) |
+
+TCP port the health check targets. Defaults to whatever `$PORT` your container is listening on.
+
+```yaml
+health:
+  path: /api/health
+  port: 8080
+```
+
+### `restart_on`
+
+| | |
+|---|---|
+| Type | `array<string>` |
+| Item pattern | `^[a-z][a-z0-9_-]*$` |
+| Unique items | yes |
+| Required | no |
+
+Integration slugs whose connection-state changes should restart the deployment. By default, when a tenant connects, disconnects, or rebinds an integration, the running container keeps its current env. Listing a slug here makes the deploy worker restart the container so it picks up the new credentials.
+
+Use this when your app caches credentials at boot. If your app uses the Vendo SDK's reconciler or polls `connections.list()`, you usually do not need this.
+
+```yaml
+restart_on:
+  - openai
+  - telegram
+```
+
+## What `vendo.yaml` does not control
+
+These belong elsewhere, not in the manifest:
+
+| Concern | Where it lives |
+|---|---|
+| Container image, ports, start command | Template JSON at `runvendo/vendo-templates/{slug}/{version}.json` |
+| Databases, Redis, R2, volumes | Template JSON |
+| Wizard layout and user inputs | Template JSON (`userInputs[]`, `wizardLayout`) |
+| Marketing copy, pricing display | `apps_catalog.marketing` JSONB (DB seed migration) |
+| Connection env-var mapping | Per-integration registry in `packages/integrations/<slug>/integration.ts` |
+
+The split: `vendo.yaml` is what the tool author declares about their app. Templates and `apps_catalog` are what Vendo's catalog declares about the deploy recipe. Tool authors typically only touch `vendo.yaml`.
+
+## Validation
+
+```bash
+vendo validate ./vendo.yaml
+```
+
+Runs `ajv` against `vendo.schema.json`. Exits non-zero on any error. Run it locally before pushing, and in CI on every PR.
+
+## Related
+
+- [Build a tool](/docs/build-a-tool) — walkthroughs that produce a working `vendo.yaml`.
+- [Vendo CLI > validate](/docs/reference/cli/validate) — the validator command.
+- [Integrations catalog](/docs/integrations) — slugs you can use under `integrations`.

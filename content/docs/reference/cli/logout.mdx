@@ -1,0 +1,41 @@
+---
+title: vendo logout
+description: Revoke the locally stored CLI key server-side and remove the local config file.
+---
+
+## Synopsis
+
+```bash
+vendo logout
+```
+
+Revokes the credential cached in `~/.vendo/config.json` against the Vendo server (`POST /api/cli/revoke`), then deletes the local file. Safe to run repeatedly — if you are already logged out, the command prints `Not logged in.` and exits cleanly.
+
+## Flags
+
+This command takes no flags besides `--help` / `-h`.
+
+## Output
+
+On success:
+
+```
+✓ Logged out.
+```
+
+If the server-side revoke fails (offline, server restart, rate limit, etc.), the CLI prints a warning and still removes the local file. The local credential is gone either way; the server-side key will sit in `keys` with `revoked_at` next time you log in, or you can revoke it from the dashboard.
+
+```
+Server-side revoke returned 503; clearing local credential anyway.
+✓ Logged out.
+```
+
+If there is no local credential to start with:
+
+```
+Not logged in.
+```
+
+## Related
+
+- [vendo login](login)
