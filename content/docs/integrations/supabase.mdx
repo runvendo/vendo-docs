@@ -30,6 +30,10 @@ These are the env vars Vendo injects into your deployment at boot when this inte
 | `SUPABASE_ACCESS_TOKEN` | `credential.access_token` |
 
 
+## Reading the credential at runtime
+
+The env var above is set in your deployment's environment at boot — `process.env.SUPABASE_ACCESS_TOKEN` (TypeScript) / `os.environ["SUPABASE_ACCESS_TOKEN"]` (Python) returns the tenant's Composio-issued access token, in case you need raw API access. For the canonical path (metering, connected-account resolution, error normalization) use [`vendo.data.execute`](/docs/guides/recipes/call-composio-action) instead.
+
 ## Through Composio
 
 Calls to Supabase are brokered through Vendo's Composio bridge. Your tool issues a `vendo.data.execute(ACTION, args)` call; Vendo resolves the tenant's connected Supabase account, forwards to Composio, meters one `composio.action_call` unit, and returns the result. Your code never sees the upstream credential.

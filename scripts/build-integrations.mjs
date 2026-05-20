@@ -321,6 +321,31 @@ function quickstartFor(defaultProfile, slug, providerName, tokenComment) {
   return tokenQuickstart(slug, tokenComment);
 }
 
+// Render the "Reading the credential at runtime" section that explains the
+// env var is already present in os.environ, and that `vendo.token(slug)` is
+// the resolution-chain-aware alternative (also works in OSS mode).
+//
+// We pick the first non-BASE_URL env var as the "primary" — for token-based
+// providers that's the API key / access token / bot token. For composio,
+// we keep the same shape but lead with `vendo.data.execute` since that's
+// the canonical path; the env var is the escape hatch for raw API access.
+function runtimeAccessSection(envBootstrap, providerName, composio) {
+  const vars = envBootstrap && Array.isArray(envBootstrap.vars) ? envBootstrap.vars : [];
+  const primary = vars.find((v) => !(typeof v.name === "string" && v.name.endsWith("_BASE_URL")));
+  if (!primary) return "";
+  const varName = primary.name;
+  if (composio) {
+    return `## Reading the credential at runtime
+
+The env var above is set in your deployment's environment at boot — \`process.env.${varName}\` (TypeScript) / \`os.environ["${varName}"]\` (Python) returns the tenant's Composio-issued access token, in case you need raw API access. For the canonical path (metering, connected-account resolution, error normalization) use [\`vendo.data.execute\`](/docs/guides/recipes/call-composio-action) instead.
+`;
+  }
+  return `## Reading the credential at runtime
+
+Vendo writes \`${varName}\` (and any companion vars above) into your deployment's environment at boot — the official ${providerName} SDK auto-discovers it, so most code just instantiates the client with no extra wiring. \`vendo.token(slug)\` is the resolution-chain-aware alternative that reads the same value in Vendo mode and falls back to whatever you set in OSS mode; use whichever fits your style. See [Two modes](/docs/concepts/two-modes) for the full resolution chain.
+`;
+}
+
 function preserveProse(slug, defaultProse) {
   const path = join(OUT_DIR, `${slug}.mdx`);
   if (!existsSync(path)) return defaultProse;
@@ -389,6 +414,7 @@ These are the env vars Vendo injects into your deployment at boot when this inte
 
 ${envVarsSection(envBootstrap)}
 
+${runtimeAccessSection(envBootstrap, catalog.name, composio)}
 ${callShapeBlock}
 ## Quickstart
 
@@ -478,6 +504,7 @@ These are the env vars Vendo injects into your deployment at boot when this inte
 
 ${envVarsSection(row.env_bootstrap)}
 
+${runtimeAccessSection(row.env_bootstrap, row.name, composio)}
 ${composio
   ? `## Through Composio\n\nCalls to ${row.name} are brokered through Vendo's Composio bridge. Your tool issues a \`vendo.data.execute(ACTION, args)\` call; Vendo resolves the tenant's connected ${row.name} account, forwards to Composio, meters one \`composio.action_call\` unit, and returns the result. Your code never sees the upstream credential.\n\nSee [Call a Composio Action](/docs/guides/recipes/call-composio-action) for the full pattern, including \`NotConnected\` handling.\n`
   : `## Direct API\n\n${row.name} is called directly (no Vendo proxy intermediary). The SDK reads the injected credential from the environment and talks to ${row.name}'s API host.\n`
