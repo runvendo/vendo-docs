@@ -31,6 +31,10 @@ These are the env vars Vendo injects into your deployment at boot when this inte
 | `ANTHROPIC_BASE_URL` | `literal:https://anthropic-proxy.vendo.run` |
 
 
+## Reading the credential at runtime
+
+Vendo writes `ANTHROPIC_API_KEY` (and any companion vars above) into your deployment's environment at boot — the official Anthropic SDK auto-discovers it, so most code just instantiates the client with no extra wiring. `vendo.token(slug)` is the resolution-chain-aware alternative that reads the same value in Vendo mode and falls back to whatever you set in OSS mode; use whichever fits your style. See [Two modes](/docs/concepts/two-modes) for the full resolution chain.
+
 ## Proxy endpoint
 
 Calls to Anthropic are brokered through Vendo's proxy at:
