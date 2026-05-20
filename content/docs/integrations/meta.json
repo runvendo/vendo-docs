@@ -1,4 +1,17 @@
 {
   "title": "Integrations",
-  "pages": ["index"]
+  "pages": [
+    "index",
+    "anthropic",
+    "assemblyai",
+    "elevenlabs",
+    "gemini",
+    "instagram",
+    "muapi",
+    "notion",
+    "openai",
+    "openrouter",
+    "supabase",
+    "telegram"
+  ]
 }
