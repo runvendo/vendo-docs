@@ -1,0 +1,80 @@
+---
+title: vendo.yaml
+description: The manifest at the root of your repo that tells Vendo what your tool needs to run.
+---
+
+import { Card, Cards } from "fumadocs-ui/components/card";
+
+`vendo.yaml` is a deploy-time manifest. It lives at the root of your repo, and Vendo reads it the moment a tenant clicks **Deploy** in the dashboard (and again every time you cut a new release). It is the contract between your tool and the platform: what providers you talk to, what configuration the tenant has to supply, what env vars get injected at boot, and how Vendo decides whether your container is healthy.
+
+The SDK does not read `vendo.yaml`. The runtime contract — env vars, proxy URLs, the `vendo_sk_*` key — is set up by the platform based on what the manifest declares, and your code reads it from `process.env` / `os.environ` like any other configuration.
+
+## What it controls
+
+```yaml
+name: my-tool          # catalog slug, immutable once set
+version: 1             # manifest schema version (always 1 today)
+runtime: python        # hint for the dashboard
+integrations:          # providers your tool calls through Vendo's proxy
+  - provider: openrouter
+  - provider: telegram
+    optional: true
+userInputs:            # config the tenant fills in the deploy wizard
+  - key: GREETING
+    label: Greeting message
+    inputType: text
+env:                   # static env contract
+  required: [DATABASE_URL]
+  optional: [LOG_LEVEL]
+health:                # how Vendo decides your container is up
+  path: /healthz
+  port: 8080
+```
+
+Six concerns. Each gets its own page below.
+
+<Cards>
+  <Card
+    title="Integrations"
+    description="Declare the providers (OpenRouter, Telegram, Stripe…) your tool talks to."
+    href="/docs/build-a-tool/vendo-yaml/integrations"
+  />
+  <Card
+    title="Wizard inputs"
+    description="Config the tenant fills in at deploy time — your tool's settings screen."
+    href="/docs/build-a-tool/vendo-yaml/wizard-inputs"
+  />
+  <Card
+    title="Env and secrets"
+    description="What env vars are required, what gets injected at boot, what stays secret."
+    href="/docs/build-a-tool/vendo-yaml/env-and-secrets"
+  />
+  <Card
+    title="Healthchecks"
+    description="The contract Vendo uses to decide whether your deployment is alive."
+    href="/docs/build-a-tool/vendo-yaml/healthchecks"
+  />
+</Cards>
+
+## When it's read
+
+`vendo.yaml` is consumed at two points and nowhere else:
+
+1. **Release time.** When you push a new version of your tool, Vendo's release pipeline reads the manifest, validates it against the schema, and writes the resolved values (`integrations`, `userInputs`, `wizardLayout`) into `tool_releases` for that version. Existing deployments stay pinned to the version they were deployed on; new deployments pick up the new manifest.
+2. **Deploy time.** When a tenant deploys your tool, the deploy worker reads the resolved release record, asks the tenant for any `userInputs`, binds connections for each integration, materializes the env var set, and starts your container with all of that in place.
+
+After that, the manifest plays no role. Your code never reads it; the SDK never reads it. Everything is plain env vars from your code's point of view.
+
+## Versioning the manifest
+
+`version: 1` refers to the manifest *schema*, not your tool's release. It stays `1` indefinitely — new fields are added as optional, and breaking changes get a new major version that the platform supports in parallel for at least one release cycle.
+
+Your tool's own version is separate, tracked in `tool_releases.version` (e.g. `1.0.7`, `2.0.0`). You bump it whenever you ship a meaningfully different build. Each version is a frozen snapshot of `vendo.yaml` plus the container image SHA — existing tenants on the old version aren't affected until they opt into an upgrade.
+
+## Validation
+
+The release pipeline validates `vendo.yaml` against the canonical schema and fails loudly on drift. See [Reference](/docs/reference) for the full field list and types.
+
+## Legacy fields
+
+Older manifests used `requires:` (now `integrations:`), `variables:` (now `userInputs:`), and `templateVersion:` (gone — schema version is implied by `version: 1`). The platform still accepts the old names for one grace period, but new manifests should use the current spelling.

@@ -1,0 +1,72 @@
+---
+title: Healthchecks
+description: The contract Vendo uses to decide whether your deployment is alive — and what happens when it isn't.
+---
+
+A healthcheck is how Vendo knows your tool is up. The deploy worker polls a path on your container after launch; if it returns 2xx within the timeout, your deployment moves to `ready` and the tenant sees a green light. If it doesn't, the deploy is marked failed and the tenant gets a "your tool didn't come up" error with logs attached.
+
+Healthchecks apply only to `deployment`-type tools. Downloadable and npm tools have their own readiness paths (binary downloaded, CLI authenticated) handled by the dashboard, not the manifest.
+
+## Declaring the check
+
+```yaml
+health:
+  path: /healthz
+  port: 8080
+  timeout: 60
+  interval: 5
+```
+
+- **`path`** — the HTTP path the deploy worker GETs. Defaults to `/healthz`. Any 2xx response counts as healthy.
+- **`port`** — the container port to hit. Defaults to `$PORT`, which Vendo sets to `8080` unless your template overrides it.
+- **`timeout`** — seconds the worker waits for the first healthy response before failing the deploy. Defaults to 60. Bump it for slow-starting tools (e.g. those running migrations on boot).
+- **`interval`** — seconds between polls. Defaults to 5.
+
+Everything is optional. A tool that responds 200 on `GET /healthz` with no further configuration is healthchecked correctly by Vendo's defaults.
+
+## What to put in the endpoint
+
+The simplest healthy implementation, in any language:
+
+```python
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+```
+
+```typescript
+app.get("/healthz", (_req, res) => res.json({ ok: true }));
+```
+
+For tools that talk to a database, a slightly richer check confirms the connection is live:
+
+```python
+@app.get("/healthz")
+async def healthz():
+    await db.execute("select 1")
+    return {"ok": True}
+```
+
+Don't make the check expensive. The worker polls it every few seconds during deploy and (in production) the platform's monitoring may keep polling for liveness. A healthcheck that spawns work, locks a row, or calls a third-party API is going to cause flaps and false alarms. Stick to a couple of cheap synchronous checks: process up, DB reachable, in-memory state initialized.
+
+If you genuinely need a deeper check, expose it on a *different* path (e.g. `/diagnostics`) and leave `/healthz` cheap.
+
+## Behavior on failure
+
+**During deploy.** If the endpoint doesn't return 2xx within the timeout, the deploy worker marks the workflow failed at the `wait_for_ready` step, captures the most recent container logs, and surfaces them to the tenant in the dashboard. The container is left running so the tenant (and you) can inspect it. To fix: push a new release; the tenant clicks **Redeploy** and the workflow retries.
+
+**Post-deploy.** Once a deployment is marked ready, Vendo doesn't restart your container automatically when `/healthz` starts failing. Railway's own liveness logic governs that — and Railway restarts unhealthy containers up to a small retry budget before flagging them. If you want crash-loop containment, return 5xx from `/healthz` when your process is in an unrecoverable state and Railway will restart you.
+
+## Things that look like healthchecks but aren't
+
+- **Readiness vs. liveness.** Vendo's healthcheck is closer to readiness — "the deploy is done, the tenant can use the tool now". Liveness (restart on failure) is Railway's. For most tools the same endpoint serves both, but if your tool has a long warmup, expose readiness on `/healthz` and liveness on a separate path that only returns 5xx when the process is genuinely stuck.
+- **Auth-protected endpoints.** Don't put auth on `/healthz`. The deploy worker hits it from inside Vendo's network, but treating it as authenticated leads to "deploy succeeds, healthcheck 401s, deploy fails" loops.
+- **Database migrations.** Run migrations *before* your server starts listening, not in the healthcheck. The deploy worker times out faster than a real migration; you'll get a flaky-deploy reputation.
+
+## What about downloadable and npm tools?
+
+Skip the `health:` block entirely — the field is ignored for non-deployment tools. Vendo decides "ready" for those by other signals: the binary is uploaded and signed (downloadable), the CLI authenticated and registered itself via `/api/cli/apps` (npm). You can't customize either; they're handled at the catalog level.
+
+## Reference
+
+The full set of health fields, defaults, and edge cases lives in the [Reference](/docs/reference) section.

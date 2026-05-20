@@ -1,4 +1,4 @@
 {
   "title": "Build a tool",
-  "pages": ["index", "sandbox"]
+  "pages": ["index", "setup", "vendo-yaml", "sandbox"]
 }
