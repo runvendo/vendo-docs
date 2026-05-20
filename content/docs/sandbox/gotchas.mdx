@@ -36,7 +36,7 @@ ref = conn.metadata["context"]["supabase"]["ref"]
 | `instagram` | `{ ig_user_id: "<id>" }` |
 | `slack`, `gmail`, `openai`, ... | `None` |
 
-If you're writing logic that needs `context`, check for `None` first. See [cookbook/handle-not-connected](/docs/cookbook/handle-not-connected) for the full pattern.
+If you're writing logic that needs `context`, check for `None` first. See [recipes/handle-not-connected](/docs/guides/recipes/handle-not-connected) for the full pattern.
 
 ## 3. `connections.get(slug)` returns `None`, not an exception
 
@@ -111,7 +111,7 @@ MCP servers (`vendo_workspace`, `vendo_logs`, `vendo_deploy`) run alongside your
 
 In Vendo mode, `connect_url("stripe")` returns a URL the user can visit to start the OAuth dance. The URL bakes in the deployment ID, so when the user finishes connecting, the connection is auto-bound to your deployment. No follow-up call required.
 
-Return this URL from your handler when `connections.get(slug)` is `None` — see [cookbook/handle-not-connected](/docs/cookbook/handle-not-connected).
+Return this URL from your handler when `connections.get(slug)` is `None` — see [recipes/handle-not-connected](/docs/guides/recipes/handle-not-connected).
 
 ## 10. The sandbox does NOT have access to the platform Supabase
 
@@ -119,4 +119,4 @@ Return this URL from your handler when `connections.get(slug)` is `None` — see
   `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set in env, but they point at Vendo's **platform** Supabase, not the tenant's. Use them only for MCP server code; never for tenant data.
 </Callout>
 
-To read the tenant's Supabase, call `vendo.connections.get("supabase")` and use the returned `context.ref` via `vendo.data.execute("SUPABASE_BETA_RUN_SQL_QUERY", ...)`. See [cookbook/read-supabase-users](/docs/cookbook/read-supabase-users).
+To read the tenant's Supabase, call `vendo.connections.get("supabase")` and use the returned `context.ref` via `vendo.data.execute("SUPABASE_BETA_RUN_SQL_QUERY", ...)`. See [recipes/read-supabase-users](/docs/guides/recipes/read-supabase-users).

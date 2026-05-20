@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # docs-examples-ci — extract every python/typescript fenced block from
-# content/docs/cookbook into scripts/check-examples/.tmp, then check:
+# content/docs/guides/recipes into scripts/check-examples/.tmp, then check:
 #   - Python: ruff (syntax + undefined names + unused imports). No SDK
 #     install required — we only catch user-side bugs. Tighten to mypy
 #     once vendo-sdk-py ships a py.typed marker.
@@ -21,7 +21,7 @@ sdk_clone="$script_dir/.vendor/vendo-sdk-js"
 cd "$repo_root"
 
 echo "==> extracting code blocks"
-node "$script_dir/extract.mjs" content/docs/cookbook "$out_dir"
+node "$script_dir/extract.mjs" content/docs/guides/recipes "$out_dir"
 
 py_count=0
 ts_count=0
