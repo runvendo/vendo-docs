@@ -1,16 +1,21 @@
 {
-  "title": "Vendo SDKs",
+  "title": "Vendo Docs",
   "pages": [
     "index",
-    "---Getting started---",
+    "---LEARN---",
     "getting-started",
-    "---Concepts---",
     "concepts",
-    "---Cookbook---",
-    "cookbook",
-    "---SDK Reference---",
-    "sdks",
-    "---Sandbox---",
-    "sandbox"
+    "guides",
+    "---BUILD---",
+    "build-a-tool",
+    "integrations",
+    "infrastructure",
+    "---SHIP---",
+    "deploy-and-publish",
+    "security",
+    "pricing-and-revenue",
+    "---REFERENCE---",
+    "reference",
+    "changelog"
   ]
 }
