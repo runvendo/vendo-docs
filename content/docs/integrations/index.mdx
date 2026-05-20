@@ -15,17 +15,17 @@ The list below is auto-generated from the `integrations` table (enabled rows onl
 
 {/* LIST-START — replaced by scripts/build-integrations.mjs */}
 <Cards>
-  <Card title="Anthropic" description="Claude API for chat, analysis, and code generation" href="/docs/integrations/anthropic" />
-  <Card title="AssemblyAI" description="Audio transcription & analysis via AssemblyAI" href="/docs/integrations/assemblyai" />
-  <Card title="ElevenLabs" description="AI voice generation & cloning via ElevenLabs" href="/docs/integrations/elevenlabs" />
-  <Card title="Google Gemini" description="Google Gemini models for chat and multimodal AI" href="/docs/integrations/gemini" />
+  <Card title="Anthropic" description="Claude family of models. Vendo holds the upstream credential and bills per token (including cache reads / writes) through the proxy." href="/docs/integrations/anthropic" />
+  <Card title="AssemblyAI" description="Speech-to-text transcription. Vendo holds the upstream credential and bills per hour of audio." href="/docs/integrations/assemblyai" />
+  <Card title="ElevenLabs" description="Realistic text-to-speech and speech-to-text. Vendo holds the upstream credential and bills per character (TTS) or per second of audio (STT)." href="/docs/integrations/elevenlabs" />
+  <Card title="Google Gemini" description="Gemini family of models. Vendo holds the upstream credential and bills per token (including cached input) through the proxy with a route allowlist on /v1beta/models." href="/docs/integrations/gemini" />
   <Card title="Instagram" description="Publish posts, read comments, and view analytics on Instagram" href="/docs/integrations/instagram" />
-  <Card title="MuAPI" description="Image, video, and audio generation via MuAPI" href="/docs/integrations/muapi" />
-  <Card title="Notion" description="Read & write Notion pages and databases" href="/docs/integrations/notion" />
-  <Card title="OpenAI" description="Chat completions, embeddings, image generation, and audio" href="/docs/integrations/openai" />
-  <Card title="OpenRouter" description="Multi-model AI via OpenRouter" href="/docs/integrations/openrouter" />
+  <Card title="MuAPI" description="Image and media generation. Vendo holds the upstream credential and bills per generation." href="/docs/integrations/muapi" />
+  <Card title="Notion" description="Read & write Notion pages and databases via the official OAuth app install flow. Tokens never expire; no refresh strategy." href="/docs/integrations/notion" />
+  <Card title="OpenAI" description="GPT family of models. Vendo holds the upstream credential and bills per token through the proxy with a route allowlist on /v1/chat, /v1/responses, /v1/embeddings." href="/docs/integrations/openai" />
+  <Card title="OpenRouter" description="Unified API for hundreds of LLMs. Vendo holds the upstream credential and bills per token through the proxy." href="/docs/integrations/openrouter" />
   <Card title="Supabase" description="Manage Supabase projects (admin)" href="/docs/integrations/supabase" />
-  <Card title="Telegram" description="Connect a Telegram bot to receive messages" href="/docs/integrations/telegram" />
+  <Card title="Telegram" description="Telegram Bot API. Tenants connect by uploading their bot token; Vendo verifies via getMe, registers a webhook, and forwards inbound updates to the deployment." href="/docs/integrations/telegram" />
 </Cards>
 {/* LIST-END */}
 
