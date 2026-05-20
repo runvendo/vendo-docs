@@ -1,0 +1,72 @@
+---
+title: Connections and integrations
+description: The relationship between integrations (catalog), connections (credentials), and the bindings that wire them to a deployment.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Three terms get used a lot and are easy to conflate. Pinning them down is the whole game:
+
+- An **integration** is a provider Vendo brokers — OpenAI, Telegram, Notion, Stripe. It's a catalog entry. There's one per provider, shared across the platform.
+- A **connection** is one tenant's credential for one integration. A tenant might have a Telegram connection (a bot token they pasted) and an OpenAI connection (a key from BYOK or pooled from Vendo). Connections are per-tenant. They never cross.
+- A **binding** glues a connection to one of the tenant's deployments for one provider. If there's no binding, your tool gets a 403 the moment it tries to use that provider — even if the connection exists.
+
+Said in one sentence: *integrations are the menu, connections are what the tenant ordered, bindings are which plate each goes on.*
+
+## Why bindings exist (deny-by-default)
+
+A tenant might have three Telegram bots — three connections, same integration. A deployment can only talk to one of them, and the binding is how it knows which. Without that explicit row, the proxy returns 403 with a `binding_missing` error rather than guessing.
+
+This matters in two scenarios:
+
+1. **Multi-tenant safety.** Connections never leak across tenants because Vendo enforces it at the database layer. The same enforcement applies to bindings — even if you somehow got the wrong connection id, the bind operation refuses.
+2. **Multi-deployment per tenant.** One tenant can install your tool twice, each with a different Telegram bot. The bindings are the routing table.
+
+You don't manage bindings directly. The wizard at install time, and the connections UI in the tenant's dashboard, write them. From your tool's perspective the binding is opaque: you call `token("openai")`, the SDK rides the deployment's app key, and the proxy resolves the binding for you.
+
+## Wiring at install time
+
+When a tenant launches the install wizard for your tool:
+
+1. Your `vendo.yaml` declares the integrations the tool needs — say `["openai", "telegram"]`.
+2. The wizard asks the tenant to pick or connect one connection per declared integration.
+3. On launch, the deploy pipeline writes one `binding` per integration, snapshots the manifest, issues the deployment a `vendo_sk_*` key, and boots the container.
+4. The same pipeline auto-injects env vars derived from each bound connection — `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, etc. — so non-SDK code that reads from env still works.
+
+Removing or replacing a connection after install (via the tenant's dashboard) updates the binding and the env vars; the deployment surfaces a "Restart to apply" prompt.
+
+## How the SDK sees this
+
+You almost never write provider slugs and connection ids by hand. The SDK abstracts the binding lookup:
+
+```python
+import vendo
+token = vendo.token("openai")  # resolves to the bound OpenAI connection
+```
+
+Behind the scenes the SDK calls `GET /api/deployments/me/connections` with the deployment's app key and gets back a flat view of every binding plus the env vars and per-account context attached to it. That's what `vendo.token(...)`, `vendo.connections`, and `vendo.integrations.env_vars(...)` all read from.
+
+If a provider needs a per-account identifier (a Supabase project ref, an Instagram user id), Vendo discovers it at connect time and flattens it onto the same response — so your tool reads `connection.context.ref` instead of chaining a discovery call before every action.
+
+<Callout type="info">
+  Working from a Python or TypeScript codebase? The SDK reference under [Reference](/docs/reference) lists every method. The SDK shape is intentionally the same across both modes — see [Two modes](/docs/concepts/two-modes).
+</Callout>
+
+## Profiles: how the credential is held
+
+Connections come in a few flavours (Vendo calls these *profiles*). You generally don't care which — the SDK gives you the same `token(slug)` either way — but you'll see them in the dashboard:
+
+| Profile | Source of the credential |
+|---|---|
+| `byok_static` | Tenant pasted it (e.g. a Telegram bot token, a personal OpenAI key) |
+| `vendo_managed_pool` | Vendo issues the tenant a proxy key drawn from a shared pool |
+| `oauth_app_install` | Tenant ran an OAuth flow with Vendo's app credentials |
+| `composio_managed` | Vendo brokered the OAuth via Composio; refresh handled upstream |
+
+For OAuth profiles, the actual upstream access token is short-lived and refreshed transparently. Your tool never sees a stale token.
+
+## Exclusive providers
+
+Some providers — Telegram bot tokens are the canonical example — only allow one active consumer per credential. If a tenant has a Telegram connection bound to their production deployment, they cannot also bind it to a sandbox or a second copy of the tool; Vendo enforces that at bind time and returns `connection_in_use`. The customize sandbox additionally strips exclusive credentials from its `GET /api/deployments/me/connections` response so a local dev session can't steal the long-poll loop from production.
+
+You only need to think about this if you're building against an exclusive provider — your tool author docs for that integration will call it out. The Telegram integration page under [Integrations](/docs/integrations) covers the consequences.
