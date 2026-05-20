@@ -374,8 +374,8 @@ export default function HomePage() {
                 <Link href="/docs/concepts/two-modes" className="hover:text-[#1A1A18] dark:hover:text-[#EEEEE8] transition-colors">
                   Concepts
                 </Link>
-                <Link href="/docs/cookbook" className="hover:text-[#1A1A18] dark:hover:text-[#EEEEE8] transition-colors">
-                  Cookbook
+                <Link href="/docs/guides/recipes" className="hover:text-[#1A1A18] dark:hover:text-[#EEEEE8] transition-colors">
+                  Recipes
                 </Link>
                 <a href="https://github.com/runvendo/vendo-docs" target="_blank" rel="noopener noreferrer" className="hover:text-[#1A1A18] dark:hover:text-[#EEEEE8] transition-colors">
                   vendo-docs

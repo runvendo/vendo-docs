@@ -3,13 +3,13 @@ name: docs-examples-ci
 on:
   pull_request:
     paths:
-      - "content/docs/cookbook/**"
+      - "content/docs/guides/recipes/**"
       - "scripts/check-examples/**"
       - ".github/workflows/check-examples.yml"
   push:
     branches: [main]
     paths:
-      - "content/docs/cookbook/**"
+      - "content/docs/guides/recipes/**"
       - "scripts/check-examples/**"
       - ".github/workflows/check-examples.yml"
   workflow_dispatch:
