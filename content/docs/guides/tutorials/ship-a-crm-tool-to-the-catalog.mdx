@@ -1,0 +1,316 @@
+---
+title: Ship a CRM tool to the catalog
+description: Start from a working CRM tool and end with a merged vendo-templates PR plus a live catalog listing — modeled on Twenty CRM.
+---
+
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+
+You have a working CRM — say, a fork of [Twenty CRM](https://github.com/twentyhq/twenty) packaged as a container image, or a homegrown tool with a web UI, Postgres-backed schema, and an admin login. This tutorial gets it from "works on my machine" to a public catalog listing at [vendo.run](https://vendo.run) where any Vendo tenant can install it in two clicks.
+
+The end state is three things merged in three places:
+
+- A **template manifest** at `<YOUR_TOOL_SLUG>/<version>.json` in [`runvendo/vendo-templates`](https://github.com/runvendo/vendo-templates).
+- A **catalog seed migration** in the Vendo monorepo creating the `apps_catalog` row.
+- A **release migration** pointing `tool_releases` at the new manifest version.
+
+The tutorial uses Twenty CRM as the running example because it's the canonical deployment-type tool in Vendo's catalog today — same shape applies to any server-side CRM.
+
+## What you'll need
+
+- A built container image of your CRM, published to a registry Vendo can pull from. `ghcr.io` and `docker.io` work without extra config; private registries need credentials wired into the Railway template.
+- A `vendo.yaml` in your tool's repo — the source-side authoring manifest (covered in [Build a tool](/docs/build-a-tool)). Strictly speaking the templates pipeline doesn't *read* `vendo.yaml` (the template JSON is what the deploy worker consumes), but having it keeps your repo and the platform's view aligned.
+- A working `/healthz` (or equivalent) endpoint on your image. The deploy worker polls this; if it never returns 2xx, the deploy fails.
+- A test deploy that already works on Vendo as a **private** listing — the publish step assumes the manifest is correct. If you haven't done that yet, start with [Private deploy](/docs/deploy-and-publish/private-deploy) and come back here.
+
+If you have all four, you're ready.
+
+---
+
+<Steps>
+
+<Step>
+
+## Pick a slug and lock it in
+
+Your slug is the single name for the tool across every Vendo surface:
+
+- `apps_catalog.slug` in the database.
+- The directory name in `vendo-templates/`.
+- The proxy subdomain (only relevant for adapter-style tools, not deployment-style CRMs).
+- The URL segment: `vendo.run/tools/<slug>`.
+- The KV key, the template filename, the docs URL.
+
+Renaming it later is a data migration. Pick once, lowercase, hyphens only, 2–63 characters, matching `[a-z][a-z0-9-]{1,62}[a-z0-9]`. For a CRM modeled on Twenty, `twenty` is taken; pick something like `<YOUR_TOOL_SLUG>` (e.g. `mycrm`, `acme-crm`, `studio-crm`).
+
+A common mistake is making your slug too generic (`crm`) or too marketing-flavored (`acme-crm-2025`). Aim for short, unambiguous, and stable: this string will be in URLs your users bookmark for years.
+
+</Step>
+
+<Step>
+
+## Write the template manifest
+
+The template JSON is what the deploy worker reads to provision a tenant instance. It declares the services to run, the databases to provision, the secrets to mint, the integrations to bind, and the wizard the tenant sees at install time. The schema is documented in [Manifest format](/docs/deploy-and-publish/publish-to-catalog/manifest); below is a CRM-shaped minimum.
+
+```json
+{
+  "slug": "<YOUR_TOOL_SLUG>",
+  "name": "My CRM",
+  "version": "1.0.0",
+  "services": [
+    {
+      "name": "server",
+      "role": "web",
+      "image": "ghcr.io/<YOUR_GH_USERNAME>/<YOUR_TOOL_SLUG>:1.0.0",
+      "port": 3000,
+      "startCommand": "yarn start",
+      "env": {
+        "DATABASE_URL": "${database_url}",
+        "APP_SECRET": "${app_secret}",
+        "SERVER_URL": "https://${domain}",
+        "STORAGE_S3_ENDPOINT": "${r2_endpoint}",
+        "STORAGE_S3_REGION": "auto",
+        "STORAGE_S3_NAME": "${r2_bucket}",
+        "STORAGE_ACCESS_KEY_ID": "${r2_access_key}",
+        "STORAGE_SECRET_ACCESS_KEY": "${r2_secret_key}"
+      },
+      "volumes": [{ "mountPath": "/data", "sizeGB": 2 }]
+    }
+  ],
+  "databases": [
+    { "name": "postgres", "type": "postgresql", "provider": "neon", "region": "aws-us-east-1" }
+  ],
+  "secrets": {
+    "app_secret": { "type": "random_hex", "length": 32 }
+  },
+  "r2Storage": { "name": "files" },
+  "readiness": { "endpoint": "/healthz", "timeoutSeconds": 300 },
+  "integrations": [
+    { "provider": "openrouter" }
+  ],
+  "userInputs": [
+    {
+      "key": "DEFAULT_LOCALE",
+      "category": "user_optional",
+      "label": "Default locale",
+      "description": "Locale for new accounts (e.g. en-US, fr-FR).",
+      "default": "en-US",
+      "inputType": "text"
+    }
+  ],
+  "wizardLayout": {
+    "groups": [
+      {
+        "title": "Connect AI",
+        "items": [{ "type": "integration", "provider": "openrouter" }]
+      },
+      {
+        "title": "Configure",
+        "items": [
+          { "type": "input", "key": "DEFAULT_LOCALE" },
+          { "type": "input", "*": true }
+        ]
+      }
+    ]
+  },
+  "adminBootstrap": {
+    "authMode": "api_seed",
+    "seedEndpoint": "/api/seed",
+    "payloadTemplate": {
+      "email": "${admin_email}",
+      "password": "${admin_password}",
+      "workspaceName": "${admin_workspace_name}"
+    }
+  }
+}
+```
+
+Things worth knowing about every block:
+
+- **`services[]`** runs one Railway container per entry. One service must have `role: "web"` — that's what the deploy worker exposes on `<deployment-slug>.<tenant-slug>.vendo.run`. Mount a Railway volume for anything your CRM persists outside Postgres (uploads, attachments) and pair it with R2 for cross-deploy durability.
+- **`${...}` placeholders** are resolved by the deploy worker during the `resolve_env` phase. `${database_url}`, `${r2_*}`, `${app_secret}`, `${domain}`, `${admin_email}`, `${admin_password}` are platform-provided. The full list is in [Manifest format § Env-var placeholders](/docs/deploy-and-publish/publish-to-catalog/manifest#env-var-placeholders).
+- **`integrations: [...]`** lists every provider your tool calls through Vendo's proxy. For a CRM that ships an "AI assistant" feature, `openrouter` is the canonical choice — it gets you `OPENROUTER_API_KEY` (a `vendo_sk_*` proxy key) and `OPENROUTER_BASE_URL` (`https://openrouter-proxy.vendo.run/v1`) injected at boot, so an unmodified OpenAI SDK pointed at those env vars meters through Vendo automatically. If your tool calls no third-party providers, set `"integrations": []` — empty array, not omitted.
+- **`adminBootstrap.authMode: "api_seed"`** lets the deploy worker create the admin account by POSTing to a seed endpoint your tool implements. `apps_catalog.auth_mode` must agree with this value — see the next step.
+- **`wizardLayout`** controls the configure-step UX. Twenty's pattern — providers first, then config — is the most common and works for almost every CRM. Add a `{ "type": "input", "*": true }` sweep in your last group so any `userInputs[]` key you forgot to place explicitly still appears.
+
+Save the file as `<YOUR_TOOL_SLUG>/1.0.0.json` in a fork of [`runvendo/vendo-templates`](https://github.com/runvendo/vendo-templates).
+
+</Step>
+
+<Step>
+
+## Write the catalog seed migration
+
+The `apps_catalog` row is what makes your tool discoverable. The Vendo monorepo's `supabase/migrations/` directory holds the seed migrations; you'll open a PR adding one for your tool.
+
+```sql
+-- supabase/migrations/NNN_<YOUR_TOOL_SLUG>_tool.sql
+BEGIN;
+
+INSERT INTO apps_catalog (
+  slug, name, description, tool_type, auth_mode, category, icon_url, marketing, enabled
+)
+VALUES (
+  '<YOUR_TOOL_SLUG>',
+  'My CRM',
+  'Open-source CRM with the data model of Salesforce, the UX of Notion, and a built-in AI assistant.',
+  'deployment',
+  'api_seed',
+  'productivity',
+  '/logos/<YOUR_TOOL_SLUG>.png',
+  jsonb_build_object(
+    'replaces',     'Salesforce + HubSpot',
+    'savings',      '85%',
+    'monthlyCost',  '$25',
+    'theyCharge',   '$165/mo',
+    'pricing',      'credits',
+    'featured',     false
+  ),
+  true
+);
+
+COMMIT;
+```
+
+Two things to align before you submit:
+
+- **`auth_mode` and `adminBootstrap.authMode` must match.** The wizard renders different Configure steps based on `auth_mode` — `api_seed`, `manual_setup`, or `no_auth`. Disagreement causes the wizard to render the wrong step or get stuck in a redirect loop.
+- **`marketing` JSONB is what shows up on the catalog card.** `replaces` and `savings` are the value-prop bullets; `monthlyCost` and `theyCharge` are the price comparison. The fields are read by `getPublicToolsCatalog` in `web/src/lib/tools-catalog-server.ts`. Set `featured: true` only if Vendo's team has agreed to feature your tool on the homepage.
+
+Drop the logo PNG into `web/public/logos/<YOUR_TOOL_SLUG>.png` in the same PR. 256×256 is a safe target; the catalog card renders at 64×64 and the tool page at 96×96.
+
+</Step>
+
+<Step>
+
+## Write the release migration
+
+A catalog row alone isn't deployable — it needs a `tool_releases` row pointing at a manifest version. This is the bridge between "the tool exists in the catalog" and "deploys actually work."
+
+```sql
+-- supabase/migrations/NNN_<YOUR_TOOL_SLUG>_release_1_0_0.sql
+BEGIN;
+
+INSERT INTO tool_releases (
+  tool_id, source_repo, version, template_version, status, requires
+)
+SELECT
+  ac.id,
+  'https://github.com/<YOUR_GH_USERNAME>/<YOUR_TOOL_SLUG>',
+  '1.0.0',
+  '1.0.0',
+  'active',
+  '[{"provider": "openrouter"}]'::jsonb
+FROM apps_catalog ac
+WHERE ac.slug = '<YOUR_TOOL_SLUG>';
+
+COMMIT;
+```
+
+<Callout type="warn">
+Do **not** COALESCE `requires` from a previous row when this is your first release — there isn't one, and even on later releases COALESCE has a famous footgun: it doesn't distinguish "null" from "empty array". Write the `requires` array explicitly from your new manifest's `integrations[]`. The full story is in [Versioning & releases § The COALESCE trap](/docs/deploy-and-publish/publish-to-catalog/versioning-and-releases#the-coalesce-trap).
+</Callout>
+
+`source_repo` is metadata only — surfaced on the tool detail page so prospective users can read the code. It doesn't have to be a public repo today, but plan on it being one before the public listing goes live.
+
+</Step>
+
+<Step>
+
+## Open the templates PR
+
+Push your fork of `runvendo/vendo-templates` and open a PR against `main`. The PR body should include:
+
+- **What the tool does** in one sentence (Vendo's review reads this verbatim and pastes it into the description field if you haven't already).
+- **Repo URL** for the source code.
+- **Image tag** referenced in `services[].image` — confirm it's pullable without credentials.
+- **Integrations** your manifest declares — confirm each provider slug already exists in `packages/integrations/<slug>/integration.ts` in the monorepo. If you're introducing a new provider, that's a separate PR first.
+- **Pricing intent** — `credits` if the tool calls the proxy (any `OPENROUTER_*` use, any LLM call), `free` if it's entirely self-hosted.
+
+A GitHub Action — `publish-to-r2.yml` — runs on every push. It validates the manifest against the schema (`required` fields, env-var placeholder syntax, `userInputs` and `wizardLayout` cross-references) and fails the PR if anything is off. Schema-valid does **not** mean *correct*; a human reviewer still checks the substance.
+
+What that reviewer is looking for:
+
+- **Slug consistency** between manifest, directory name, and seed migration.
+- **Pullable image.** They'll `docker pull` it from a clean machine.
+- **Integration coverage.** Every `integrations[].provider` slug must exist in the integrations registry. The reviewer also checks that `integrations[]` is not silently empty if your tool obviously calls third-party APIs.
+- **A `["*"]` wizard sweep.** Missing it is fail-quiet — a forgotten `userInputs[]` key drops out of the wizard without warning.
+- **`readiness.endpoint` actually responds 2xx** on a fresh container with no admin seeded.
+- **Data preservation.** Anything that must survive suspend/resume lives in Postgres, R2, KV, or a mounted Railway volume — never in the container filesystem.
+- **Pricing model matches behavior.** `pricing: "free"` on a tool that calls the proxy silently skips billing. Don't do that.
+
+The reviewer will leave inline comments. Once you've addressed them, the PR merges and the action uploads the manifest to R2 at `templates/<YOUR_TOOL_SLUG>/1.0.0.json`.
+
+The full reviewer checklist and templates-repo conventions are in [Submission](/docs/deploy-and-publish/publish-to-catalog/submission) and [The vendo-templates repo](/docs/deploy-and-publish/publish-to-catalog/templates-repo).
+
+</Step>
+
+<Step>
+
+## Open the monorepo PR
+
+The seed migration and the release migration land together in the Vendo monorepo. The reviewer will sequence the merges so the manifest is live in R2 before the release row points at it.
+
+In your monorepo PR, include the two SQL files from steps 3 and 4, the logo PNG, and a brief description that links back to the templates PR. The Vendo CI runs `repo verify --base origin/main` on affected packages — if the migrations touch anything beyond `apps_catalog` and `tool_releases`, you'll see test failures here.
+
+<Callout type="warn">
+Migrations don't apply automatically on merge — they need `supabase db push` against the prod project. The reviewer runs this; don't run it yourself unless you're on the Vendo team and have been explicitly asked to. The sequence is: templates PR merges (manifest in R2) → monorepo PR merges (CI green) → reviewer runs `supabase db push` → catalog query starts returning your tool.
+</Callout>
+
+</Step>
+
+<Step>
+
+## Verify the listing is live
+
+Once the migration applies, your tool appears at `vendo.run/tools/<YOUR_TOOL_SLUG>` and in the main catalog. Verify three things:
+
+1. **The card renders.** Open `vendo.run` and find the card. Logo, name, `replaces` line, and `monthlyCost` should all read correctly. If anything looks off, the `marketing` JSONB is where to look.
+2. **The Deploy button works.** Click it. The wizard should advance through Connect → Configure → Pay → Launch. Twenty's pattern — one OpenRouter binding then a Configure step — should appear cleanly. If `wizardLayout` has a bug, you'll see misplaced fields or a missing step here.
+3. **A real deploy succeeds.** Pick a deployment slug, launch, and watch `deploy_logs` advance from `validate_template` to `notify_user`. Common first-deploy failures are:
+   - **Image pull error** — registry credentials weren't wired, or the tag isn't public yet.
+   - **Healthcheck timeout** — your container is up but `/healthz` doesn't respond within `readiness.timeoutSeconds` (default 300s). For CRMs with heavy startup work, bump the timeout or add a placeholder healthcheck that returns 2xx immediately and a deeper one for in-cluster orchestration.
+   - **Admin seed failure** — the `seedEndpoint` in your manifest doesn't match the real route, or the payload schema disagrees.
+
+If anything goes wrong, [Logs and debugging](/docs/deploy-and-publish/operate/logs-and-debugging) and the `inspecting-deployment-logs` skill cover how to read across the three log surfaces (Supabase `deploy_logs`, Railway compute, Cloudflare app-proxy).
+
+</Step>
+
+<Step>
+
+## Cut your next version
+
+You've shipped 1.0.0. The next release is the same shape with two changes:
+
+1. Push `<YOUR_TOOL_SLUG>/1.0.1.json` to `runvendo/vendo-templates`, setting `previousVersions: ["1.0.0"]` so the upgrade path knows the lineage.
+2. Open a new release migration that flips the existing active row to `inactive` and inserts a new active row pointing at `1.0.1` with the integrations array sourced from the new manifest.
+
+The pattern is in [Versioning & releases](/docs/deploy-and-publish/publish-to-catalog/versioning-and-releases) and `supabase/migrations/283_hermes_release_3_1_9.sql` is the canonical example to copy from. The relevant semver conventions:
+
+- **Patch (1.0.0 → 1.0.1)** — image rebuild, no manifest shape changes, no new integrations. Safe to roll out to existing tenants en masse.
+- **Minor (1.0.x → 1.1.0)** — additive shape changes (new optional inputs, new optional integrations). Safe with smoke testing.
+- **Major (1.x.x → 2.0.0)** — anything that requires a tenant to re-bind, re-enter inputs, or accept new pricing. Treat as a migration; don't auto-upgrade.
+
+Vendo doesn't enforce semver, but the rollout tooling assumes it. If you ship a breaking change as a patch, automated upgrades will run anyway and break tenants in production.
+
+Existing deployments stay pinned to whatever version they originally deployed against — that snapshot lives in `deployments.manifest` and never changes unless a human explicitly upgrades the deployment. The full pinning model is in [Versioning & releases § Pinning behavior](/docs/deploy-and-publish/publish-to-catalog/versioning-and-releases#pinning-behavior).
+
+</Step>
+
+</Steps>
+
+---
+
+## What you just built
+
+A public catalog listing backed by a frozen, versioned, schema-validated manifest. Every tenant who clicks Deploy gets a clean Railway project running your image, a Neon Postgres, an R2 bucket, an OpenRouter binding that meters through the Vendo proxy, and an admin user seeded by your tool's own API. None of that is bespoke code on Vendo's side — the manifest is the contract, and the deploy worker turns it into infrastructure.
+
+From here:
+
+- **You want to ship breaking changes.** Read [Rollout & upgrades](/docs/deploy-and-publish/publish-to-catalog/rollout-and-upgrades) for the migration model — how existing tenants opt into a new release without breaking their data.
+- **You want to add an OAuth integration to the CRM.** Follow [Add OAuth integrations](/docs/guides/tutorials/add-oauth-integrations) — Notion contacts sync, Google Drive attachments, that kind of thing.
+- **You want to add a custom proxy adapter.** That's the path for a CRM that calls a metered third-party service Vendo doesn't broker yet. Start at [Onboarding a new tool](/docs/concepts/what-is-a-tool) and the proxy adapter section of [New tool onboarding](/docs/build-a-tool).
+
+For everything ongoing — updating, suspending, debugging — start at [Operate](/docs/deploy-and-publish/operate).

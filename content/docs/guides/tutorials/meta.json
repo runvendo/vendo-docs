@@ -1,4 +1,9 @@
 {
   "title": "Tutorials",
-  "pages": ["index"]
+  "pages": [
+    "index",
+    "telegram-bot-from-scratch",
+    "ship-a-crm-tool-to-the-catalog",
+    "add-oauth-integrations"
+  ]
 }
