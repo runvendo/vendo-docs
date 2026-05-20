@@ -1,4 +1,14 @@
 {
   "title": "Concepts",
-  "pages": ["two-modes", "multi-tenant", "errors", "events", "webhooks"]
+  "pages": [
+    "what-is-a-tool",
+    "two-modes",
+    "multi-tenant",
+    "connections-and-integrations",
+    "proxy-and-credentials",
+    "credits-and-billing",
+    "events",
+    "webhooks",
+    "errors"
+  ]
 }
