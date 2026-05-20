@@ -5,7 +5,7 @@ description: Manage deployed apps — list, update spend caps, mint keys, change
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The `/api/apps/*` surface manages **apps** — the rows that back each deployment in `tool_authorizations` (formerly `apps`). One app per deployment, one or more `keys` per app, one binding per provider per app. All endpoints are session-authenticated and scoped to the caller's tenant.
+The `/api/apps/*` surface manages **apps** — the rows that back each deployment in the `apps` table (renamed from `tool_authorizations` in migration 130; Drizzle still exports the symbol as `toolAuthorizations`). One app per deployment, one or more `keys` per app, one binding per provider per app. All endpoints are session-authenticated and scoped to the caller's tenant.
 
 ## `GET /api/apps`
 
@@ -36,7 +36,7 @@ Session cookie.
 
 | Field | Type | Notes |
 |---|---|---|
-| `id` | `string` | UUID of the `tool_authorizations` row. Same as `deployments.authorization_id`. |
+| `id` | `string` | UUID of the `apps` row (a.k.a. `tool_authorizations` in older code). Same as `deployments.authorization_id`. |
 | `kind` | `string` | `"deployment"` or `"project"` |
 | `display_name` | `string \| null` | Optional human label |
 | `key_prefix` | `string \| null` | First 12 chars of the most-recent active app-scoped key (the full key plaintext is never returned by this endpoint) |

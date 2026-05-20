@@ -1,6 +1,7 @@
 {
   "title": "SDK Reference",
   "pages": [
+    "index",
     "python",
     "python/reference",
     "typescript",

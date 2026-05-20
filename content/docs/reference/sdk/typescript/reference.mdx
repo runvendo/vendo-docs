@@ -420,8 +420,8 @@ Represents a provider connection for this deployment.
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `string` | UUID. Required. |
-| `externalId` | `string` | Provider-side identifier (user ID, account ID, etc.). Required. |
+| `id` | `string` | UUID. Always present on the TypeScript SDK because its minimum backend version emits this field unconditionally. (The Python SDK marks this optional for back-compat with older backends.) |
+| `externalId` | `string` | Provider-side identifier (user ID, account ID, etc.). Same back-compat note as `id`. |
 | `slug` | `string` | Provider slug. |
 | `displayName` | `string` | Human-readable provider name. |
 | `category` | `string` | Provider category. |

@@ -543,8 +543,8 @@ Represents a provider connection for this deployment.
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `str \| None` | UUID. `None` on `available` entries. |
-| `external_id` | `str \| None` | Provider-side identifier (the provider's user ID, account ID, etc.). |
+| `id` | `str \| None` | UUID. Optional in Python because older Vendo backends (pre-v0.9.0a5) omit it from the wire payload; `None` on `available` entries. The TypeScript SDK marks this required because its minimum supported backend already emits it. |
+| `external_id` | `str \| None` | Provider-side identifier (the provider's user ID, account ID, etc.). Same backend-version caveat as `id`. |
 | `slug` | `str` | Provider slug, e.g. `"supabase"`, `"stripe"`. |
 | `display_name` | `str` | Human-readable provider name. |
 | `category` | `str` | Provider category, e.g. `"database"`, `"crm"`. |

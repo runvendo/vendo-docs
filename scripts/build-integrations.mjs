@@ -465,11 +465,19 @@ function quickstartFor(defaultProfile, slug, providerName, tokenComment) {
 //     undefined in the running container. To read the credential, call
 //     `vendo.token(slug)` (live fetch from credentials.vendo.run) or the
 //     canonical `vendo.data.execute(ACTION, args)`.
-function runtimeAccessSection(envBootstrap, providerName, composio, slug) {
-  const vars = envBootstrap && Array.isArray(envBootstrap.vars) ? envBootstrap.vars : [];
-  const primary = vars.find((v) => !(typeof v.name === "string" && v.name.endsWith("_BASE_URL")));
-  if (!primary) return "";
-  const varName = primary.name;
+function runtimeAccessSection(envVars, providerName, composio, slug) {
+  // Collect every env-var name across every profile, then pick the primary
+  // — i.e. the first one that isn't a *_BASE_URL companion. Same heuristic
+  // as the old env_bootstrap.primary, applied to the new ConnectionEnvVarMap.
+  const names = new Set();
+  if (envVars && typeof envVars === "object") {
+    for (const map of Object.values(envVars)) {
+      if (!map || typeof map !== "object") continue;
+      for (const name of Object.keys(map)) names.add(name);
+    }
+  }
+  const varName = [...names].find((n) => !n.endsWith("_BASE_URL"));
+  if (!varName) return "";
   if (composio) {
     return `## Reading the credential at runtime
 
@@ -552,7 +560,7 @@ These are the env vars Vendo injects into your deployment at boot when this inte
 
 ${envVarsSection(envVars, catalog.supported_profiles)}
 
-${runtimeAccessSection(envBootstrap, catalog.name, composio, slug)}
+${runtimeAccessSection(envVars, catalog.name, composio, slug)}
 ${callShapeBlock}
 ## Quickstart
 

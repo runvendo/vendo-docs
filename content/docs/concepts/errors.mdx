@@ -9,25 +9,25 @@ All SDK errors inherit from a common base (`VendoError` in Python/TS, `VendoErro
 
 ## Error code reference
 
-The `Vendo-Error-Code` response header is the canonical wire-format code. Several codes can map to the same SDK class — `binding_missing` and `connection_revoked` both raise `NotConnected`, for example.
+The `Vendo-Error-Code` response header is the canonical wire-format code for proxy-returned errors. Several codes can map to the same SDK class — `binding_missing` and `connection_revoked` both raise `NotConnected`, for example. Two codes (`vendo_only_feature`, `identity_not_present`) are SDK-only: the SDK raises them before any HTTP call and they never appear on the wire.
 
-| `Vendo-Error-Code` | Python / TS class | Swift case | When the proxy returns it |
-|--------------------|-------------------|------------|---------------------------|
-| `app_unknown` | `AuthError` | `.auth` | The presented `vendo_sk_*` bearer was not found |
-| `app_revoked` | `AuthError` | `.auth` | The app key was revoked by the tenant |
-| `app_expired` | `AuthError` | `.auth` | The app key passed its expiry |
-| `binding_missing` | `NotConnected` | `.notConnected` | No connection is bound for the requested provider |
-| `connection_revoked` | `NotConnected` | `.notConnected` | The bound connection was revoked |
-| `connection_needs_reauth` | `NeedsReauth` | `.needsReauth` | The bound OAuth token expired; user must re-authorize |
-| `balance_exhausted` | `BalanceExhausted` | `.balanceExhausted` | The tenant's wallet hit zero |
-| `spend_cap_daily` | `SpendCapExceeded` | `.spendCapExceeded` | The per-app daily spend cap fired |
-| `spend_cap_monthly` | `SpendCapExceeded` | `.spendCapExceeded` | The per-app monthly spend cap fired |
-| `upstream_rate_limited` | `RateLimited` | `.rateLimited` | The upstream provider returned 429 |
-| `upstream_error` | `UpstreamError` | `.upstream` | The upstream provider returned a non-2xx, non-429 response |
-| `validation_failed` | `ValidationError` | `.validation` | Request payload or webhook signature was invalid |
-| `idempotency_conflict` | `IdempotencyConflict` | `.idempotencyConflict` | Same idempotency key with a different payload hash |
-| `vendo_only_feature` | `VendoOnlyFeature` | `.vendoOnlyFeature` | OSS-mode call hit a surface that requires `VENDO_API_KEY` |
-| `identity_not_present` | `IdentityNotPresent` | `.identityNotPresent` | `forRequest` called without an `X-Vendo-User-JWT` header |
+| Code | Python / TS class | Swift case | Origin | When it's raised |
+|------|-------------------|------------|--------|------------------|
+| `app_unknown` | `AuthError` | `.auth` | proxy | The presented `vendo_sk_*` bearer was not found |
+| `app_revoked` | `AuthError` | `.auth` | proxy | The app key was revoked by the tenant |
+| `app_expired` | `AuthError` | `.auth` | proxy | The app key passed its expiry |
+| `binding_missing` | `NotConnected` | `.notConnected` | proxy | No connection is bound for the requested provider |
+| `connection_revoked` | `NotConnected` | `.notConnected` | proxy | The bound connection was revoked |
+| `connection_needs_reauth` | `NeedsReauth` | `.needsReauth` | proxy | The bound OAuth token expired; user must re-authorize |
+| `balance_exhausted` | `BalanceExhausted` | `.balanceExhausted` | proxy | The tenant's wallet hit zero |
+| `spend_cap_daily` | `SpendCapExceeded` | `.spendCapExceeded` | proxy | The per-app daily spend cap fired |
+| `spend_cap_monthly` | `SpendCapExceeded` | `.spendCapExceeded` | proxy | The per-app monthly spend cap fired |
+| `upstream_rate_limited` | `RateLimited` | `.rateLimited` | proxy | The upstream provider returned 429 |
+| `upstream_error` | `UpstreamError` | `.upstream` | proxy | The upstream provider returned a non-2xx, non-429 response |
+| `validation_failed` | `ValidationError` | `.validation` | proxy | Request payload or webhook signature was invalid |
+| `idempotency_conflict` | `IdempotencyConflict` | `.idempotencyConflict` | proxy | Same idempotency key with a different payload hash |
+| `vendo_only_feature` | `VendoOnlyFeature` | `.vendoOnlyFeature` | SDK | OSS-mode call hit a surface that requires `VENDO_API_KEY` |
+| `identity_not_present` | `IdentityNotPresent` | `.identityNotPresent` | SDK | `forRequest` called without an `X-Vendo-User-JWT` header |
 
 Codes the SDK does not recognise raise the base `VendoError` with the code preserved on `err.code`.
 

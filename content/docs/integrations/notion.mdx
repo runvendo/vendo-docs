@@ -32,7 +32,7 @@ These are the env vars Vendo injects into your deployment at boot when this inte
 
 ## Reading the credential at runtime
 
-Vendo writes `NOTION_API_KEY` (and any companion vars above) into your deployment's environment at boot — the official Notion SDK auto-discovers it, so most code just instantiates the client with no extra wiring. `vendo.token(slug)` is the resolution-chain-aware alternative that reads the same value in Vendo mode and falls back to whatever you set in OSS mode; use whichever fits your style. See [Two modes](/docs/concepts/two-modes) for the full resolution chain.
+Vendo writes `NOTION_TOKEN` (and any companion vars above) into your deployment's environment at boot — the official Notion SDK auto-discovers it, so most code just instantiates the client with no extra wiring. `vendo.token(slug)` is the resolution-chain-aware alternative that reads the same value in Vendo mode and falls back to whatever you set in OSS mode; use whichever fits your style. See [Two modes](/docs/concepts/two-modes) for the full resolution chain.
 
 ## Direct API
 
