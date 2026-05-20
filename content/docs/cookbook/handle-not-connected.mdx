@@ -1,0 +1,101 @@
+---
+title: Handle NotConnected
+description: Surface a structured needs_connection payload so the frontend can redirect users to the connect portal.
+---
+
+`NotConnected` is raised by `vendo.data.execute` when the provider required by the action is not connected (`binding_missing` from the proxy). The correct response is to return a structured payload so the frontend can redirect the user to the connect portal.
+
+`connections.get(slug)` returns `None` / `null` (not `NotConnected`) when the provider is not connected. These are two different signals for two different code paths — see the comparison table below.
+
+---
+
+## Catch NotConnected from data.execute
+
+```python
+import vendo_sdk as vendo
+from vendo_sdk.errors import NotConnected
+
+def run_stripe_action():
+    try:
+        result = vendo.data.execute(
+            "STRIPE_LIST_CUSTOMERS",
+            {"limit": 10}
+        )
+        return {"customers": result}
+    except NotConnected as e:
+        # e.slug is "stripe"
+        # e.suggested_env_vars is ["STRIPE_API_KEY"] in OSS mode
+        return {
+            "needs_connection": e.slug,
+            "connect_url": vendo.connect_url(e.slug),
+        }
+```
+
+```typescript
+import { Vendo, NotConnected } from "@vendodev/sdk";
+
+const vendo = new Vendo();
+
+async function runStripeAction() {
+  try {
+    const result = await vendo.data.execute("STRIPE_LIST_CUSTOMERS", { limit: 10 });
+    return { customers: result };
+  } catch (e) {
+    if (e instanceof NotConnected) {
+      // e.slug === "stripe"
+      return {
+        needsConnection: e.slug,
+        connectUrl: vendo.connectUrl(e.slug),
+      };
+    }
+    throw e;
+  }
+}
+```
+
+---
+
+## Handle the response on the frontend
+
+The frontend receives `{ needs_connection: "stripe", connect_url: "..." }` and opens the connect portal:
+
+```typescript
+const res = await fetch("/api/stripe-customers");
+const data = await res.json();
+
+if (data.needs_connection) {
+  // Open the Vendo connect portal in a popup
+  window.open(data.connect_url, "vendo-connect", "width=500,height=700");
+}
+```
+
+After the user connects, the portal closes and fires a `connection.connected` webhook. Your webhook handler calls `vendo.invalidate(slug)` and the next `data.execute` call succeeds.
+
+---
+
+## connections.get vs NotConnected — which to use
+
+| Situation | Pattern |
+|---|---|
+| Check if a provider is connected before doing anything | `connections.get(slug)` returns `None` |
+| Execute an action and handle failure if not connected | `data.execute` raises `NotConnected` |
+| Show a connect button in the UI before the user attempts an action | `connections.get(slug)` — render the `setup_url` from the returned entry |
+| Execute an action and want a single try/catch for all error cases | Catch `NotConnected` from `data.execute` |
+
+---
+
+## NotConnected error fields
+
+| Field | Type | Description |
+|---|---|---|
+| `slug` | `str` | The provider slug that is not connected, e.g. `"stripe"`. |
+| `suggested_env_vars` | `list[str]` | In OSS mode: env var names to set to connect this provider. Empty in Vendo mode. |
+| `message` | `str` | Human-readable message. |
+
+---
+
+## Notes
+
+- In Vendo mode `connect_url` returns a working URL only when `VENDO_API_KEY` is set. Do not call it in OSS mode.
+- The `setup_url` field on a `Connection` entry returned by `connections.list()` is the same URL — use it when you want to pre-render the connect button without waiting for a `NotConnected` error.
+- After the user connects, the next call to `connections.get(slug)` returns the connection, and `data.execute` succeeds. You do not need to restart the process.

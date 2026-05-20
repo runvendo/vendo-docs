@@ -1,0 +1,122 @@
+---
+title: Sandbox SDK gotchas
+description: Read this before writing code that uses vendo_sdk inside a customize sandbox. Most "Loading..." spirals trace back to one of the items below.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Read this before writing code that uses `vendo_sdk` inside a customize sandbox. Most "Loading..." spirals trace back to one of the items below.
+
+---
+
+## 1. `connection.context` is flat — don't reach into `metadata.context[slug]`
+
+The MCP tools in the customize chat and the runtime SDK return the **same shape**: a `Connection` with a top-level `context` field.
+
+```python
+# Right
+conn = vendo.connections.get("supabase")
+ref = conn.context["ref"]    # "vqxkddreoeebocpisgrn"
+```
+
+```python
+# Wrong — this is the raw DB row, not what the SDK returns
+ref = conn.metadata["context"]["supabase"]["ref"]
+```
+
+`connection.metadata` is still emitted for backwards compatibility, but you should never traverse it. Use `connection.context`. The normalization is implemented once in [`packages/sdk-surface/src/normalize.ts`](https://github.com/runvendo/vendo/blob/main/packages/sdk-surface/src/normalize.ts) and shared by MCP, the web API, and both SDKs.
+
+## 2. Discovery providers vs non-discovery providers
+
+`connection.context` is `None` (or `null`) for providers that don't carry a per-account identifier:
+
+| Provider | `context` shape |
+|---|---|
+| `supabase` | `{ ref: "<project_ref>" }` |
+| `instagram` | `{ ig_user_id: "<id>" }` |
+| `slack`, `gmail`, `openai`, ... | `None` |
+
+If you're writing logic that needs `context`, check for `None` first. See [cookbook/handle-not-connected](/docs/cookbook/handle-not-connected) for the full pattern.
+
+## 3. `connections.get(slug)` returns `None`, not an exception
+
+When the user hasn't connected a provider:
+
+```python
+conn = vendo.connections.get("stripe")
+if conn is None:
+    return {"needs_connection": "stripe", "connect_url": vendo.connect_url("stripe")}
+```
+
+`NotConnected` is a different beast — it's raised by `vendo.data.execute(action, args)` when the action's required connection is missing. The two paths surface the same condition at different layers.
+
+## 4. Default request timeout is 5 seconds
+
+Every SDK call has a default 5s timeout. On overrun the SDK raises `VendoTimeout`. **Hung requests should be impossible** — if you see "Loading..." forever in your tool's UI, the backend handler is either blocking on something other than the SDK or swallowing the exception.
+
+Wrap your handler:
+
+```python
+try:
+    conn = vendo.connections.get("supabase")
+except vendo.VendoTimeout:
+    return JsonResponse({"error": "vendo_api_timeout"}, status=503)
+```
+
+## 5. `VENDO_API_KEY` isn't always set
+
+For a freshly-created deployment, the agent key may not be minted yet. The SDK treats this as OSS mode and `vendo.is_vendo_mode()` returns `False`. Methods that require Vendo mode (`billing.*`, `events.*`, `for_user`, `connect_url`) raise `VendoOnlyFeature`.
+
+In practice the sandbox always has the key by the time the agent boots. But if you're writing top-level module code that runs at import time, prefer reading config from the SDK methods (which lazily resolve) over reading `os.environ` directly.
+
+## 6. Reading sandbox logs
+
+`print(...)` from your tool code lands in the sandbox's stdout. To tail it from your local machine while the customize chat is open:
+
+```bash
+# Get the sandbox ID for a deployment (from the customize chat UI or DB).
+# Then tail the broker that forwards sandbox logs:
+wrangler tail customize-sandbox-broker --format pretty | grep '<sandbox_id>'
+```
+
+Always flush:
+
+```python
+print(f"got conn: {conn}", flush=True)
+```
+
+```typescript
+console.log(`got conn:`, conn);  // auto-flushed in Node
+```
+
+Without `flush=True` in Python, buffered output won't reach the broker until the process exits.
+
+## 7. Curl the deployment endpoint directly when debugging
+
+Don't deploy-and-pray. From your local machine you can hit the live deployment URL with the dev session cookie:
+
+```bash
+SESSION=$(infisical run --env dev --projectId b366cac7-1716-47a0-9617-f335500f6dee -- ./bin/repo dev:session --json)
+COOKIE=$(echo "$SESSION" | jq -r .cookie_header)
+curl -H "Cookie: $COOKIE" "https://<deployment_slug>.<tenant_slug>.vendo.run/api/<your_endpoint>"
+```
+
+This is the fastest way to confirm an endpoint hangs vs. returns 500 vs. returns a malformed body. The customize sandbox runs on a preview URL — the pattern is the same; substitute the preview hostname.
+
+## 8. Don't reach into MCP server internals from your tool code
+
+MCP servers (`vendo_workspace`, `vendo_logs`, `vendo_deploy`) run alongside your tool inside the sandbox, but they're for the customize agent — not for the deployed tool's runtime code. Your tool code should call the SDK, not import MCP modules. If you find yourself wanting to call an MCP tool from app code, the SDK is missing a method — file an issue.
+
+## 9. `vendo.connect_url(slug)` is sandbox-aware
+
+In Vendo mode, `connect_url("stripe")` returns a URL the user can visit to start the OAuth dance. The URL bakes in the deployment ID, so when the user finishes connecting, the connection is auto-bound to your deployment. No follow-up call required.
+
+Return this URL from your handler when `connections.get(slug)` is `None` — see [cookbook/handle-not-connected](/docs/cookbook/handle-not-connected).
+
+## 10. The sandbox does NOT have access to the platform Supabase
+
+<Callout type="warn">
+  `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set in env, but they point at Vendo's **platform** Supabase, not the tenant's. Use them only for MCP server code; never for tenant data.
+</Callout>
+
+To read the tenant's Supabase, call `vendo.connections.get("supabase")` and use the returned `context.ref` via `vendo.data.execute("SUPABASE_BETA_RUN_SQL_QUERY", ...)`. See [cookbook/read-supabase-users](/docs/cookbook/read-supabase-users).

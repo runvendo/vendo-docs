@@ -1,0 +1,118 @@
+---
+title: Read Supabase Users
+description: Query the tenant's Supabase auth.users table by reading the project ref from the connection context.
+---
+
+Query the tenant's Supabase `auth.users` table from inside a deployed tool. The project `ref` comes from the connection's `context` field — you don't need to call a discovery action every time.
+
+---
+
+## Get the Supabase ref and run a query
+
+```python
+import vendo_sdk as vendo
+
+def get_user_count():
+    conn = vendo.connections.get("supabase")
+
+    # Not connected — tell the frontend to connect first
+    if conn is None:
+        return {"needs_connection": "supabase", "connect_url": vendo.connect_url("supabase")}
+
+    # Connected but context is None — Supabase OAuth finished but ref wasn't
+    # captured yet. This should not happen in practice; treat it as an error.
+    if conn.context is None:
+        return {"error": "supabase_context_missing"}
+
+    ref = conn.context["ref"]  # e.g. "vqxkddreoeebocpisgrn"
+
+    result = vendo.data.execute(
+        "SUPABASE_BETA_RUN_SQL_QUERY",
+        {
+            "project_id": ref,
+            "query": "SELECT count(*) AS total FROM auth.users"
+        }
+    )
+    return result
+```
+
+```typescript
+import { Vendo, NotConnected } from "@vendodev/sdk";
+
+const vendo = new Vendo();
+
+async function getUserCount() {
+  const conn = await vendo.connections.get("supabase");
+
+  // Not connected
+  if (!conn) {
+    return {
+      needsConnection: "supabase",
+      connectUrl: vendo.connectUrl("supabase"),
+    };
+  }
+
+  // Context missing (should not happen post-OAuth, but handle it)
+  if (!conn.context) {
+    return { error: "supabase_context_missing" };
+  }
+
+  const ref = conn.context["ref"] as string; // "vqxkddreoeebocpisgrn"
+
+  const result = await vendo.data.execute(
+    "SUPABASE_BETA_RUN_SQL_QUERY",
+    {
+      project_id: ref,
+      query: "SELECT count(*) AS total FROM auth.users",
+    }
+  );
+  return result;
+}
+```
+
+---
+
+## Error paths
+
+**User hasn't connected Supabase yet**
+
+`connections.get("supabase")` returns `None` / `null`. The correct response is to return a `needs_connection` payload so the frontend can redirect the user to the connect portal.
+
+**Context is `None` / `null`**
+
+`context` is populated at OAuth-finish time by the discovery step. If it's missing, the OAuth flow did not complete cleanly. This is rare — surface it as an error rather than silently proceeding.
+
+**Action fails because provider is not connected**
+
+If you call `data.execute` directly without checking `connections.get` first, and Supabase isn't connected, the proxy returns `binding_missing` and the SDK raises `NotConnected`. Catch it:
+
+```python
+from vendo_sdk.errors import NotConnected
+
+try:
+    result = vendo.data.execute("SUPABASE_BETA_RUN_SQL_QUERY", {...})
+except NotConnected as e:
+    return {"needs_connection": e.slug}
+```
+
+```typescript
+import { NotConnected } from "@vendodev/sdk";
+
+try {
+  const result = await vendo.data.execute("SUPABASE_BETA_RUN_SQL_QUERY", { ... });
+} catch (e) {
+  if (e instanceof NotConnected) {
+    return { needsConnection: e.slug };
+  }
+  throw e;
+}
+```
+
+---
+
+## Notes
+
+- The `ref` field is the Supabase project reference: a short alphanumeric string like `vqxkddreoeebocpisgrn`. It is the same value you see in Supabase dashboard URLs.
+- `SUPABASE_BETA_RUN_SQL_QUERY` is the Composio action name. Check the [Composio Supabase integration](https://composio.dev) for the full list of available actions.
+- `context` is `null` for providers that do not have discovery identifiers (Slack, Stripe, etc.). Supabase and Instagram are the current discovery providers.
+- Inside the customize-sandbox, `connections.get` has a 5s timeout. If your deployment has a slow connection to `VENDO_API_URL`, raise it by setting `VENDO_TIMEOUT_MS`. See [sandbox/gotchas](/docs/sandbox/gotchas).

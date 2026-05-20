@@ -1,0 +1,41 @@
+---
+title: Sandbox runtime env vars
+description: Every env var the Vendo customize-sandbox injects into your tool's processes at boot.
+---
+
+Env vars the Vendo customize-sandbox injects into every process at boot (dev-server, agent-server, MCP servers, your tool's runtime). Source: [`web/src/lib/customize/hooks.ts`](https://github.com/runvendo/vendo/blob/main/web/src/lib/customize/hooks.ts) → `getEnvVars`.
+
+Available at import time and at request time — they're set before any process starts.
+
+| Variable | Always set? | Description |
+|---|---|---|
+| `VENDO_DEPLOYMENT_ID` | Yes | UUID of the deployment running in this sandbox. The SDK uses it to scope `connections.list()`, `connections.get()`, and billing reads. |
+| `VENDO_API_URL` | Yes | Base URL the SDK calls. Defaults to `https://vendo.run`; overridden in dev environments. |
+| `VENDO_AUTH` | Yes (`"1"`) | Tells the SDK to send `Authorization: Bearer $VENDO_API_KEY` on every request. |
+| `VENDO_SANDBOX` | Yes (`"1"`) | Signals to the SDK and proxy that the call is from a customize sandbox (some endpoints behave differently — e.g. exclusive-provider credentials are stripped). |
+| `VENDO_API_KEY` | Usually | The deployment's `vendo_sk_*` proxy key. Missing when the deploy hasn't minted a key yet; MCP write tools fail without it, read-only paths still work. |
+| `VENDO_TENANT_ID` | Usually | UUID of the tenant. Missing for older deployments without tenant scoping. |
+| `SUPABASE_URL` | Yes | For MCP servers that talk to the platform Supabase. **Not for app code** — use a connection instead. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes | Service-role key for the platform Supabase. Same caveat: platform-only, not for tenant data. |
+| `COMPOSIO_API_KEY` | Yes | Composio key used by MCP servers. App code should call `vendo.data.execute(action, args)` instead of using Composio directly. |
+| `HERMES_AUTH_BYPASS` | Yes (`"1"`) | Skips Hermes login pages inside the sandbox so the in-browser iframe doesn't redirect to auth. |
+
+## Reading them
+
+```python
+import os
+deployment_id = os.environ["VENDO_DEPLOYMENT_ID"]
+```
+
+```typescript
+const deploymentId = process.env.VENDO_DEPLOYMENT_ID!;
+```
+
+You almost never need to read these yourself — the SDK picks them up automatically from `os.environ` / `process.env` on construction. If you find yourself reading `VENDO_API_KEY` directly to make an HTTP call, you probably want `vendo.data.execute(...)` or `vendo.connections.get(...)` instead.
+
+## What's NOT set
+
+- Per-provider API keys (Stripe, OpenAI, Anthropic, etc.). Those flow through the proxy via `vendo.data.execute(...)` — your code never sees the raw key.
+- `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc. — even when an LLM provider is connected, the key lives in the proxy, not the sandbox env.
+
+If you need a provider key in env for a third-party SDK that won't accept the proxy URL, declare it in your tool's `vendo.yaml` `env_bootstrap` and the deploy worker will inject it.
