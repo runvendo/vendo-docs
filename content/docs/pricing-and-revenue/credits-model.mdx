@@ -1,0 +1,113 @@
+---
+title: Credits model
+description: How tenants buy and consume credits, and what that means for your tool's runtime behavior.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Vendo's billing surface is a single prepaid balance per tenant, denominated in USD and stored as an append-only ledger. There are no subscriptions, no invoices, no per-deployment fees. Every proxied API call your tool makes drains a small amount; every credit purchase tops it up. When the balance hits zero, your tool's deployment is suspended. When the tenant pays, it resumes.
+
+This page is the canonical reference for that flow. You don't write any code against the ledger — but every tool that calls the proxy depends on it, so it's worth knowing the moving parts before you ship.
+
+## The ledger
+
+A tenant's balance is the sum of an append-only `credits` table. Positive rows are purchases or grants; negative rows are usage deductions. Internally everything is integer micro-USD (`1` = `$0.000001`); USD is only the display format. Nothing in the ledger is editable — corrections happen by inserting a compensating row.
+
+Tenants live 1:1 with a Stripe customer. The first time a tenant clicks "Add credits", Vendo creates the Stripe customer record and runs a Payment Intent for the amount they picked. On success, a positive row lands in `credits` and the cached balance (`balance:{tenant_id}` in Cloudflare KV, 60-second TTL) is invalidated.
+
+## What drains credits
+
+Two streams of negative rows:
+
+- **Proxied API calls** — every call your tool makes through `{provider}-proxy.vendo.run` is metered. Cost is `quantity × upstream_unit_cost × (1 + margin_pct / 100)`, rounded to micro-USD with banker's rounding. The proxy does this work in the background after the response returns to your tool. See [Per-call costs](/docs/pricing-and-revenue/per-call-costs) for the formula in detail.
+- **Compute + database hosting** — the hourly billing-rollup worker samples Railway and Neon usage (vCPU-seconds, RAM-GB-hours, disk-GB-months, egress) and writes a single rolled-up deduction per integration per hour. This is the variable cost of hosting your deployment, with the same margin applied.
+
+Cloudflare Workers and Pages are not metered to tenants — Vendo eats that cost.
+
+## The deploy-time gate
+
+Before your tool can deploy for a tenant, `POST /api/deploy` requires:
+
+1. A `stripe_customers` row exists (i.e. the tenant has at least started the billing flow).
+2. The wallet balance is strictly positive.
+
+Either missing means the API returns `402 Payment Required`:
+
+| Code | Meaning |
+|---|---|
+| `BILLING_NOT_SETUP` | No Stripe customer yet — tenant must complete `/api/billing/customer`. |
+| `INSUFFICIENT_CREDITS` | Balance is `≤ $0` — tenant must top up via `/api/billing/purchase`. |
+
+[Test tenants and admins bypass this gate](/docs/pricing-and-revenue/test-mode). For everyone else, the wizard's "Pay" step funds the wallet before the deploy worker is ever called.
+
+## Per-call gating (reserve / settle)
+
+At call time, the proxy doesn't trust the cached balance to be exact — concurrent requests on the same edge would all see the same value and over-spend. Instead it uses a reserve/settle pattern:
+
+1. **Reserve** — deduct a fixed hold from the cached balance (`$1.00` for OpenRouter / Anthropic / OpenAI; less for cheap providers). If `balance < hold`, the proxy returns `402` before forwarding.
+2. **Forward** — call the upstream provider with the real API key.
+3. **Settle** — after the response, compute the actual cost from the upstream's usage payload and refund `(hold − actual)` to the cached balance, then write the negative row to the ledger.
+
+For your tool, this means a metered call past zero balance returns `402` from the proxy, not from the upstream. Unmetered routes (e.g. `GET /v1/models`) skip the reserve entirely — metadata calls work even at zero balance.
+
+## Suspension on zero
+
+When the balance hits zero and the tenant doesn't have auto-reload armed, the `credit-watchdog` cron (5-minute interval) suspends every running deployment for that tenant. Suspension is a gentle state, not a teardown:
+
+```
+running → suspending → suspended → resuming → running
+                          \→ (90 days) → destroyed
+```
+
+What survives a suspension:
+
+- Postgres data (Neon branch paused, not deleted)
+- R2 object storage
+- Railway volumes
+- Cloudflare KV entries (proxy keys, deployment status)
+
+What does not:
+
+- In-container filesystem writes outside a mounted volume
+- In-memory state (Redis without an AOF/RDB volume)
+
+The public URL serves a status page during `suspending` / `suspended` / `resuming`. Tenants top up, Stripe fires `payment_intent.succeeded`, the webhook auto-resumes any deployment whose `suspension_reason` was `insufficient_credits`. Manual suspends (Settings → Danger Zone) are left alone — Vendo doesn't override an explicit choice.
+
+After 90 days suspended, the `suspension-reaper` cron destroys the deployment. Tenants get a 7-day warning at day 83 and a 1-day warning at day 89.
+
+<Callout type="info">
+  Suspension is per-deployment, not per-tenant. If a tenant runs five tools and goes to zero, all five suspend together — they share the wallet.
+</Callout>
+
+## Top-up flow
+
+Tenants top up two ways:
+
+1. **One-off purchase** — they pick an amount in the dashboard, Stripe.js handles the card UI, the `payment_intent.succeeded` webhook posts the credit row and invalidates the balance KV.
+2. **Auto-reload** — opt-in. The tenant arms it with a saved card. When balance drops below `reload_threshold_usd`, the `credit-watchdog` cron creates an off-session Payment Intent. Same webhook lands the credit. A daily spend cap (`reload_cap_usd_per_day`, default `$50`) is the hard ceiling, and a card decline disarms reload so a failed card doesn't repeatedly retry.
+
+A "pay-and-deploy" path exists for first-time tenants: after `confirmPayment` succeeds on the client, the wizard calls `POST /api/billing/settle` to fund the wallet synchronously before calling `/api/deploy`, so the deploy gate doesn't race the Stripe webhook.
+
+## What this means for your tool
+
+You don't write any billing code. The proxy is the enforcer, the watchdog is the suspender, the webhook is the resumer. What you should design around:
+
+- **A metered call can return `402` at any time.** Treat it like a transient error in the same family as `429` or `503` — surface a friendly message, don't crash. The SDK's exception types make this discoverable.
+- **Your container can be paused mid-request.** Persist anything you care about. Don't rely on in-memory state surviving across days.
+- **The balance is shared across the tenant's tools.** A heavy LLM call in one tool can suspend another tool the tenant deployed. If your tool is the lightweight one, this is not your bug to fix — but a friendly UI ("low balance — top up") is helpful UX.
+
+The SDK exposes a read-only balance helper:
+
+```python
+import vendo
+remaining = vendo.billing.balance()  # USD float
+```
+
+This is advisory — the proxy will 402 regardless of whether you check — but it's useful for warning a user before a long operation rather than letting it fail mid-stream. It raises `VendoOnlyFeature` in OSS mode, where there's no ledger.
+
+## Where to read more
+
+- The wizard-level toggle that controls whether tenants are prompted to fund their wallet: [Setting your pricing](/docs/pricing-and-revenue/setting-your-pricing).
+- The exact cost formula and provider rates: [Per-call costs](/docs/pricing-and-revenue/per-call-costs).
+- How to exercise these flows without spending real money: [Test mode](/docs/pricing-and-revenue/test-mode).
+- Whether tool authors share in tenant revenue (short answer: not yet): [Revenue share](/docs/pricing-and-revenue/revenue-share).

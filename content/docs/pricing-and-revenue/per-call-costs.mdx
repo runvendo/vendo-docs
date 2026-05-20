@@ -1,0 +1,140 @@
+---
+title: Per-call costs
+description: How the proxy meters each call, where the margin sits, and how to estimate cost before you deploy.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Every call your tool makes through `{provider}-proxy.vendo.run` is metered and billed to the tenant's wallet. This page covers exactly how that number is calculated, where Vendo's markup sits, and how to estimate the bill your tool will produce before you ship it.
+
+## The formula
+
+Cost is computed per event, in arbitrary-precision decimal, rounded to integer micro-USD at the end with banker's rounding:
+
+```
+cost_micros = round_half_to_even(
+  quantity × unit_cost × (1 + margin_pct / 100) × 1_000_000
+)
+```
+
+| Variable | Where it comes from |
+|---|---|
+| `unit_cost` | The `rates` table. Per-provider, per-meter, per-dimension. Refreshed hourly for OpenRouter from the upstream price feed; manual for others. |
+| `quantity` | The upstream provider's usage payload (input tokens, output tokens, characters, audio seconds). |
+| `margin_pct` | `resolve_margin(tenant, meter, at_time)` — cascades from tenant-specific overrides down to a global default of **20%**. |
+
+Everything after this is integer micro-USD until the dashboard renders it.
+
+If `unit_cost` lookup returns no active row for the provider-resolved model, the proxy returns `402` *before* forwarding upstream — no upstream call, no cost, no `usage_events` row. This is the rate-miss block: it keeps Vendo from paying upstream costs Vendo can't price back to the tenant.
+
+## What's metered
+
+| Integration | Metric | Pre-margin cost (illustrative) |
+|---|---|---|
+| OpenRouter | per 1M tokens, by model | `gpt-4o-mini`: $0.15 input / $0.60 output |
+| Anthropic | per 1M tokens, by model | `claude-sonnet-4-7`: ~$3 input / $15 output |
+| OpenAI | per 1M tokens, by model | varies — see OpenAI pricing |
+| ElevenLabs TTS | per 1,000 chars | $0.06 (Flash/Turbo), $0.12 (Multilingual) |
+| ElevenLabs STT | per audio hour | $0.39 |
+| AssemblyAI | per audio hour | $0.75 (ceiling, all features) |
+| muapi (image/video) | per submit call | model-dependent |
+| Telegram | per message sent | $0.001 (effectively rounding noise) |
+| Notion | not metered through proxy | OAuth-only install, no `*-proxy` subdomain |
+
+Provider rates change. The live, authoritative numbers are at [`vendo.run/pricing`](https://vendo.run/pricing), which reads directly from the `rates` table and serves through a 1-hour cache.
+
+## Where the margin sits
+
+Margin is applied at the proxy layer, on top of the upstream's unit cost. The default is 20% global, resolved per `(tenant, meter)`:
+
+1. **Tenant + meter** (`{tenant_id, meter_id}`) — specific overrides for a tenant on a specific meter.
+2. **Tenant + integration** (`{tenant_id, integration_slug}`) — a tenant-wide deal on one provider.
+3. **Tenant** (`{tenant_id}`) — a flat per-tenant override.
+4. **Meter** (`{meter_id}`) — a per-meter default.
+5. **Integration** (`{integration_slug}`) — a per-integration default.
+6. **Global** (`{}`) — seeded at 20%.
+
+First match wins. Old usage events resolve to the rule effective at their timestamp — margin changes never alter historical bills.
+
+As a tool author, you don't set or see margin directly. It's folded into the price the tenant pays. The number you can quote to a prospective tenant is `upstream_unit_cost × (1 + 0.20)` for the default case.
+
+<Callout type="info">
+  Margin is uniform across the call: the same percentage on input and output tokens, the same percentage at every model tier. There's no "free tier" subsidy or "bulk discount" — the math is linear all the way through.
+</Callout>
+
+## Holds and refunds (reserve / settle)
+
+When your tool fires a request, the proxy doesn't know the exact cost until the upstream responds. To stop concurrent requests from over-spending under a single cached balance, it deducts a fixed **hold** up front, then refunds the difference after settling:
+
+```
+Tool → Proxy:    request
+Proxy → KV:      reserve(tenant, hold_cap)   # cache deducted by hold
+Proxy → Upstream: forward
+Upstream → Proxy: response (+ usage)
+Proxy → Tool:    pass-through
+Proxy → DB:      record_billed_usage          # write the real cost row
+Proxy → KV:      settle(tenant, hold, actual) # refund (hold - actual)
+```
+
+Hold caps are upper bounds, not averages:
+
+| Adapter | Hold cap |
+|---|---|
+| `openai`, `anthropic`, `openrouter` | $1.00 |
+| `elevenlabs`, `muapi` | $0.50 |
+| `assemblyai` | $0.20 |
+| `telegram` | $0.001 |
+
+A request with a true cost of $0.003 still trips a $1.00 hold during the call, then refunds $0.997 once the upstream usage is known. This is invisible to your tool — `balance()` will momentarily show the lower value if you read it mid-call, but it self-heals within the response window.
+
+## Free routes
+
+Some routes the proxy explicitly does not meter:
+
+| Integration | Route |
+|---|---|
+| `openai` | `GET /v1/models`, `GET /v1/models/:id` |
+| `anthropic` | `POST /v1/messages/count_tokens`, `GET /v1/models`, `GET /v1/models/:id` |
+
+These work at zero balance — handy for tools that list models in their UI or count tokens before deciding whether to fire a real call. Other adapters route every request through `recordUsage` (`routes: "passthrough"`) and are billed regardless.
+
+## Compute is metered too
+
+If your tool is `tool_type: deployment`, you're also paying for Railway compute and the per-tenant Neon database. These don't go through the proxy — instead, the hourly `billing-rollup` worker samples Railway's GraphQL usage feed and Neon's metrics, applies the same margin rules, and writes a single deduction per tenant per hour per resource.
+
+Typical numbers (with the default 20% margin already folded in):
+
+| Resource | Pre-margin rate | At idle (1 tenant) |
+|---|---|---|
+| Railway vCPU | $0.000008 / second | minimal — most idle services pin near 0% CPU |
+| Railway memory | $0.000004 / GB-second | ~$10/GB-month — usually the biggest line item |
+| Railway volume storage | $0.15 / GB-month | small unless you store data on disk |
+| Railway egress | $0.05 / GB | usually small |
+| Neon compute | $0.106 / CU-hour | ~$5/month at 0.25 CU |
+| Neon storage | $0.35 / GB-month | small unless you have a heavy database |
+
+Cloudflare Workers and Pages (the proxy, app-proxy, web app) are not metered to tenants.
+
+The practical takeaway: a typical deployment-type tool at idle costs the tenant somewhere around **$12–15/month** in compute, plus whatever they spend on proxied API calls. App sleeping (services with no outbound activity for 10 minutes) cuts ~$5/month per idle tenant — but the sleeping mechanism is broken by anything that does outbound work (cron heartbeats, persistent DB connections, WebSockets), so most real tools don't get the benefit.
+
+## Estimating cost before you deploy
+
+Before shipping a tool to the public catalog, do this math:
+
+1. **Per call** — pick the median operation your tool performs (e.g. "summarize a CRM note with `gpt-4o-mini`"). Multiply input + output tokens by the model's rate, then multiply by 1.20 for margin. Round to the nearest cent and that's the price the tenant pays per operation.
+2. **Per user-day** — estimate how many such operations a typical user does per day. Multiply by per-call cost. This is your variable bill per active user.
+3. **Per month, idle** — assume $12–15/month for compute if you're a deployment tool. This is the floor — the tenant pays this even at zero usage.
+4. **Per month, active** — sum the above. A solo user running 30 ops/day at $0.005/op for 30 days = $4.50 in API + $13 compute = **~$17/month**.
+
+Put a realistic range in your `marketing.monthlyCost` field. Tenants quoted "free" who get a $30 bill churn. Tenants quoted "$15-25/mo" who get a $20 bill don't.
+
+## Reading per-call cost from your code
+
+The SDK gives you read access to the tenant's balance but not to historical per-call costs — usage events are exposed through the dashboard, not the SDK. Read the balance to display an estimated runway; show the tenant the dashboard for line-by-line ledger detail.
+
+```typescript
+import { vendo } from "@vendodev/sdk";
+const balanceUsd = await vendo.billing.balance();
+```
+
+If you need to gate an expensive operation on remaining budget, do it in your tool's code: read the balance, estimate the call cost using known input size, refuse if the call would obviously fail. The proxy will 402 you regardless if you guess wrong — this is just UX polish to show the user a friendly message before they wait for a long operation to die.

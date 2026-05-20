@@ -1,0 +1,65 @@
+---
+title: Revenue share
+description: Whether tool authors share in tenant revenue — current state and what's in planning.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+**Vendo does not currently share revenue with tool authors and does not take a cut beyond the per-call proxy markup.** A formal program for paid tools, catalog featuring, or revenue split is in planning and not yet live.
+
+This page documents the present state, plainly, so authors can plan around it.
+
+## Today
+
+The money flow on a Vendo tool is:
+
+```
+Tenant → Stripe → Vendo wallet → upstream providers (OpenAI, Railway, Neon, …)
+```
+
+The tenant pays Vendo. Vendo pays the upstream providers (LLM, hosting, database). The difference between what the tenant pays and what the upstream costs is the per-call margin — currently a global default of 20%, applied at the proxy and at the compute-rollup layer. That margin covers Vendo's operations, the fixed costs of running the platform (proxy, dashboard, infrastructure), and the work of keeping the integrations and infrastructure running.
+
+There is no per-deployment fee, no marketplace cut, no transaction fee charged back to tool authors. Authors are not paid per deployment, per tenant, or per call.
+
+If you ship a tool to the public catalog today and a tenant deploys it, you do not receive any portion of what they pay. You also do not owe Vendo anything for hosting it on the catalog. The tool is open-source, the tenant pays for usage, and Vendo's margin pays for the plumbing.
+
+## What this means in practice
+
+- **Open-source tools, hosted commercially.** Vendo's model is closest to a managed-hosting offering for OSS. The author is paid the way OSS authors are usually paid — sponsorship, consulting, employment by someone who uses the tool. Vendo is not a paid distribution channel for your tool.
+- **No marketplace economics today.** There is no "featured tool" ranking, no "premium" tier with reduced markup, no negotiated revenue split for catalog placement. The catalog is flat.
+- **Cost-of-goods is fixed and visible.** Margin is the same across all tools at 20% global default. A tool author cannot offer a "discounted" deal to attract tenants — the price is what the proxy charges, not what the author sets.
+
+## What's in planning (no timeline)
+
+A formal program for paid tools and revenue-share is being designed. Likely directions include:
+
+- **A "paid" tool flag** in `apps_catalog` that adds an author-set markup on top of Vendo's margin, with the markup flowing to the author through Stripe Connect.
+- **Catalog featuring** — paid or curated placement, with the economics still TBD.
+- **Per-tenant license fees** — a fixed monthly fee a tool author can charge on top of usage.
+
+None of these are decided, none are in the schema, and none are being built today. When a program ships, this page will be rewritten to document the actual mechanics. Until then, treat anything you read about "Vendo revenue share" in old chat history, draft specs, or internal docs as speculation, not a commitment.
+
+<Callout type="info">
+  If you're considering shipping a tool primarily for the revenue, today's answer is: don't pick Vendo for that reason. Pick Vendo because the proxy + isolation + credits model removes operational work that you'd otherwise build yourself. The revenue side will become real later; the operational savings are real now.
+</Callout>
+
+## What you can do today
+
+If you're a tool author who wants to be paid for your work on a Vendo-hosted tool, the practical options are:
+
+- **Sponsorship** — GitHub Sponsors, Patreon, Open Collective. The tool is still OSS; tenants who find it valuable can fund development directly.
+- **Consulting** — offer paid implementation, customization, or operations on top of the OSS tool. Vendo's `customize` flow makes per-tenant code changes safe and visible, which is a natural surface for paid work.
+- **Dual-licensing** — keep the OSS version on Vendo's catalog, sell a commercial license for non-Vendo deployments (self-hosted, embedded). This is independent of Vendo's billing surface.
+- **Wait for the program** — when revenue-share ships, this page will tell you exactly how to opt in.
+
+## Open questions
+
+These are the design decisions Vendo hasn't made yet:
+
+- Whether revenue-share is opt-in per tool or platform-wide.
+- Whether the author markup is a fixed percent (e.g. "you can charge up to 10% on top of Vendo's margin") or fully author-controlled.
+- Whether payment to authors is per-tenant-per-month, per-call, or rolled up.
+- Whether catalog placement has any paid dimension at all, or stays purely editorial.
+- How tax, identity verification, and Stripe Connect onboarding work for non-US authors.
+
+If any of these matter to you, the right place to weigh in is the discussion under the [revenue-share design spec when it lands](https://github.com/runvendo/vendo) — not this page. We'll link it here when it's open.
