@@ -41,7 +41,7 @@ Instagram is called directly (no Vendo proxy intermediary). The SDK reads the in
 ```python
 import vendo
 
-# Publish posts, read comments, and view analytics on Instagram via Composio.
+# Publish posts, read comments, and pull analytics on Instagram on the user's behalf via OAuth.
 token = vendo.token("instagram")
 
 # Use `token` wherever you would have used the provider's API key —
@@ -54,7 +54,7 @@ print(token)
 import { Vendo } from "@vendodev/sdk";
 
 const vendo = new Vendo();
-// Publish posts, read comments, and view analytics on Instagram via Composio.
+// Publish posts, read comments, and pull analytics on Instagram on the user's behalf via OAuth.
 const instagramToken = await vendo.token("instagram");
 
 // Use `instagramToken` wherever you would have used the provider's API
@@ -67,7 +67,7 @@ console.log(instagramToken);
 import VendoSDK
 
 let vendo = Vendo()
-// Publish posts, read comments, and view analytics on Instagram via Composio.
+// Publish posts, read comments, and pull analytics on Instagram on the user's behalf via OAuth.
 let token = try await vendo.token("instagram")
 
 // Use `token` wherever you would have used the provider's API key.

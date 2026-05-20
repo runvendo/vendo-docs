@@ -41,7 +41,7 @@ Supabase is called directly (no Vendo proxy intermediary). The SDK reads the inj
 ```python
 import vendo
 
-# Admin Supabase projects, branches, and database settings via Composio OAuth.
+# Manage Supabase projects, branches, and secrets on the user's behalf via OAuth.
 token = vendo.token("supabase")
 
 # Use `token` wherever you would have used the provider's API key —
@@ -54,7 +54,7 @@ print(token)
 import { Vendo } from "@vendodev/sdk";
 
 const vendo = new Vendo();
-// Admin Supabase projects, branches, and database settings via Composio OAuth.
+// Manage Supabase projects, branches, and secrets on the user's behalf via OAuth.
 const supabaseToken = await vendo.token("supabase");
 
 // Use `supabaseToken` wherever you would have used the provider's API
@@ -67,7 +67,7 @@ console.log(supabaseToken);
 import VendoSDK
 
 let vendo = Vendo()
-// Admin Supabase projects, branches, and database settings via Composio OAuth.
+// Manage Supabase projects, branches, and secrets on the user's behalf via OAuth.
 let token = try await vendo.token("supabase")
 
 // Use `token` wherever you would have used the provider's API key.
