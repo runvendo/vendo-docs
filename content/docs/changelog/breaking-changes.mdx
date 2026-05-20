@@ -1,0 +1,46 @@
+---
+title: Breaking changes
+description: Consolidated list of breaking changes across SDKs and the manifest schema, with migration notes.
+---
+
+A single place to find every change that needed code edits in tools using the SDKs or the `vendo.yaml` manifest. Per-SDK release pages have the full notes; this page lists the breaking subset only.
+
+## How this page is maintained
+
+Each per-SDK page is regenerated from GitHub Releases (see [Python](/docs/changelog/sdk-python), [TypeScript](/docs/changelog/sdk-typescript), [Swift](/docs/changelog/sdk-swift)). When a release is marked `BREAKING` in the GitHub Release body, it gets a short entry here with a migration note. Schema-level breaking changes are mirrored from [Manifest schema](/docs/changelog/manifest-schema).
+
+## SDK breaking changes
+
+### Python — `runvendo/vendo-sdk-py`
+
+| Version | Date | Change | Migration |
+| --- | --- | --- | --- |
+| _none yet_ | — | First stable line is v1.x. No breaking changes since v1.0.0. | — |
+
+### TypeScript — `runvendo/vendo-sdk-js`
+
+| Version | Date | Change | Migration |
+| --- | --- | --- | --- |
+| _none yet_ | — | First stable line is v1.x. No breaking changes since v1.0.0. | — |
+
+### Swift — `runvendo/vendo-sdk-swift`
+
+| Version | Date | Change | Migration |
+| --- | --- | --- | --- |
+| _none yet_ | — | First stable line is v1.x. No breaking changes since v1.0.0. | — |
+
+## Manifest schema breaking changes
+
+| Date | Change | Migration |
+| --- | --- | --- |
+| 2026-05 | Phase 6 unified env-vars migration collapsed `v4` / `v5` shapes into a single contract. `userInputs[]` replaces `variables[]`; `integrations[]` replaces `requires[]` and is now required (pass `[]` for tools with no integrations); `templateVersion` is no longer checked and may be omitted. | Rename `variables` → `userInputs` and `requires` → `integrations` in your `vendo.yaml`. Drop `templateVersion`. See [Manifest schema](/docs/changelog/manifest-schema) for the current shape. |
+
+## When does something count as breaking?
+
+A change is breaking if any of the following is true:
+
+- A tool that worked on the previous release fails to build, deploy, or boot on the new release without code changes.
+- A public SDK function changes name, signature, or behavior in a way that callers must adapt to.
+- A required manifest field is added or renamed, or a value previously accepted is now rejected by the validator.
+
+Bug fixes that restore documented behavior are not breaking, even if they change observable output.

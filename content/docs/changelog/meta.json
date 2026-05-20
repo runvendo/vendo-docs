@@ -1,4 +1,11 @@
 {
   "title": "Changelog",
-  "pages": ["index"]
+  "pages": [
+    "index",
+    "sdk-python",
+    "sdk-typescript",
+    "sdk-swift",
+    "manifest-schema",
+    "breaking-changes"
+  ]
 }

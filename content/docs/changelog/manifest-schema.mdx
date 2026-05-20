@@ -1,0 +1,59 @@
+---
+title: Manifest schema
+description: vendo.yaml manifest schema versions and changes.
+---
+
+Tools declare themselves to Vendo through a `vendo.yaml` manifest. The deploy worker reads a normalized JSON form of the manifest from R2 at `templates/<slug>/<version>.json` and validates it against the schema below before provisioning anything.
+
+## Current schema
+
+The contract lives in `cloudflare/deploy-worker/src/schema/manifest.schema.json` (JSON Schema draft-07) with a hand-rolled runtime validator at `cloudflare/deploy-worker/src/schema/validate.ts`. Authors should treat the JSON Schema as canonical and run their manifest through it before opening a template PR.
+
+### Required top-level keys
+
+| Key | Type | Notes |
+| --- | --- | --- |
+| `slug` | string | Kebab-case; must match `apps_catalog.slug` and `{tool}-proxy.vendo.run`. |
+| `name` | string | Display name. |
+| `version` | string | Semver; matches `^\d+\.\d+\.\d+(-[a-z0-9.-]+)?$`. |
+| `services` | array | At least one service. Each declares `name`, `role` (`web` / `worker` / `cron` / `init`), and optional `image`, `port`, `healthPath`, `env`, `volumes`. |
+| `readiness` | object | Required `healthPath`, optional `maxRetries`, `retryIntervalSec`. |
+| `integrations` | array | Provider integrations the tool needs. Pass `[]` if the tool has no provider integrations — the key is required but the array may be empty. |
+
+### Optional top-level keys
+
+`description`, `templateVersion`, `source`, `databases`, `secrets`, `r2Storage`, `userInputs`, `wizardLayout`, `adminBootstrap`, `appCredentialSeed`, `computeProvider`, `vendoAuth`, `previousVersions`.
+
+### Sub-shapes worth knowing
+
+- **`userInputs[]`** — wizard-driven inputs the tenant fills in at deploy time. Each entry has `key`, plus optional `category` (`user_required` / `user_optional`), `label`, `description`, `default`, `inputType`, `visibility`.
+- **`integrations[]`** — each entry is `{ provider, optional? }`. The `provider` value must match a registered provider slug.
+- **`wizardLayout`** — optional multi-step deploy wizard. `version: 1` with a non-empty `subSteps[]` array. Section types: `deployment_name`, `workspace`, `admin_credentials`, `wizard_inputs`, `integration`, `tool_extras`.
+- **`appCredentialSeed`** — optional bootstrap that seeds provider credentials into the deployed app at first boot. Requires `endpoint` (must start with `/`) and a non-empty `items[]` of `{ provider, apiKeyVar, baseUrlVar, name?, modalities? }`.
+- **`adminBootstrap`** — optional admin-account creation. `authMode` is one of `api_seed`, `manual_setup`, or `no_auth`.
+
+## Version history
+
+The Phase 6 unified env-vars migration (May 2026) collapsed the old `v4` / `v5` shapes into a single contract:
+
+- `userInputs[]` replaces `variables[]`.
+- `integrations[]` replaces `requires[]` and is now required (use `[]` for tools with no integrations).
+- `templateVersion` is no longer checked by the validator and may be omitted.
+
+Earlier shapes are no longer accepted. Future schema changes will be appended to this page with a date stamp and a short migration note.
+
+## Validating locally
+
+```bash
+# JSON Schema draft-07 validation (works for any JSON Schema validator):
+npx ajv-cli validate \
+  -s cloudflare/deploy-worker/src/schema/manifest.schema.json \
+  -d path/to/your/vendo.yaml.json
+```
+
+For the validator that actually runs in production, import `validateManifest` from `cloudflare/deploy-worker/src/schema/validate.ts`.
+
+## Related
+
+- [Build a tool](/docs/build-a-tool) — how `vendo.yaml` fits into the publishing flow.
+- [Breaking changes](/docs/changelog/breaking-changes) — manifest-level breaking changes are also tracked there.
