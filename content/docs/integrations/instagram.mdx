@@ -30,9 +30,11 @@ These are the env vars Vendo injects into your deployment at boot when this inte
 | `INSTAGRAM_ACCESS_TOKEN` | `credential.access_token` |
 
 
-## Direct API
+## Through Composio
 
-Instagram is called directly (no Vendo proxy intermediary). The SDK reads the injected credential from the environment and talks to Instagram's API host.
+Calls to Instagram are brokered through Vendo's Composio bridge. Your tool issues a `vendo.data.execute(ACTION, args)` call; Vendo resolves the tenant's connected Instagram account, forwards to Composio, meters one `composio.action_call` unit, and returns the result. Your code never sees the upstream credential.
+
+See [Call a Composio Action](/docs/guides/recipes/call-composio-action) for the full pattern, including `NotConnected` handling.
 
 ## Quickstart
 
@@ -40,26 +42,45 @@ Instagram is called directly (no Vendo proxy intermediary). The SDK reads the in
   <Tab value="Python">
 ```python
 import vendo
+from vendo.errors import NotConnected, UpstreamError
 
-# Publish posts, read comments, and pull analytics on Instagram on the user's behalf via OAuth.
-token = vendo.token("instagram")
-
-# Use `token` wherever you would have used the provider's API key —
-# pass it to the official SDK or set it as the env var the SDK reads.
-print(token)
+# Vendo brokers the call through Composio against the tenant's connected
+# Instagram account. Browse the action catalog at composio.dev for the
+# full list of action names.
+try:
+    result = vendo.data.execute(
+        "INSTAGRAM_<ACTION>",
+        { /* action-specific arguments — see composio.dev */ },
+    )
+except NotConnected as e:
+    # Tenant hasn't connected Instagram — send them through the connect flow.
+    connect_url = vendo.connect_url(e.slug)
+except UpstreamError as e:
+    # Composio or Instagram returned an error.
+    raise
 ```
   </Tab>
   <Tab value="TypeScript">
 ```typescript
-import { Vendo } from "@vendodev/sdk";
+import { Vendo, NotConnected, UpstreamError } from "@vendodev/sdk";
 
 const vendo = new Vendo();
-// Publish posts, read comments, and pull analytics on Instagram on the user's behalf via OAuth.
-const instagramToken = await vendo.token("instagram");
 
-// Use `instagramToken` wherever you would have used the provider's API
-// key — pass it to the official SDK or read it as the env var the SDK expects.
-console.log(instagramToken);
+// Vendo brokers the call through Composio against the tenant's connected
+// Instagram account. Browse the action catalog at composio.dev for the
+// full list of action names.
+try {
+  const result = await vendo.data.execute(
+    "INSTAGRAM_<ACTION>",
+    { /* action-specific arguments — see composio.dev */ },
+  );
+} catch (e) {
+  if (e instanceof NotConnected) {
+    const connectUrl = vendo.connectUrl(e.slug);
+  } else if (e instanceof UpstreamError) {
+    throw e;
+  }
+}
 ```
   </Tab>
   <Tab value="Swift">
@@ -67,11 +88,20 @@ console.log(instagramToken);
 import VendoSDK
 
 let vendo = Vendo()
-// Publish posts, read comments, and pull analytics on Instagram on the user's behalf via OAuth.
-let token = try await vendo.token("instagram")
 
-// Use `token` wherever you would have used the provider's API key.
-print(token)
+// Vendo brokers the call through Composio against the tenant's connected
+// Instagram account. Browse the action catalog at composio.dev for the
+// full list of action names.
+do {
+  let result = try await vendo.data.execute(
+    "INSTAGRAM_<ACTION>",
+    [ /* action-specific arguments — see composio.dev */ ]
+  )
+} catch let error as NotConnected {
+  let connectUrl = vendo.connectUrl(slug: error.slug)
+} catch {
+  throw error
+}
 ```
   </Tab>
 </Tabs>
@@ -79,5 +109,6 @@ print(token)
 ## Learn more
 
 - [Concepts: connections & integrations](/docs/concepts) — how connections, bindings, and credentials fit together.
-- [Build a tool: SDK](/docs/build-a-tool) — full `vendo.token` semantics and resolution.
+- [Build a tool: SDK](/docs/build-a-tool) — full `vendo.token` and `vendo.data.execute` semantics.
+- [Call a Composio Action](/docs/guides/recipes/call-composio-action) — `vendo.data.execute` patterns and error handling.
 - [Instagram API docs](https://developers.facebook.com/docs/instagram-platform)
