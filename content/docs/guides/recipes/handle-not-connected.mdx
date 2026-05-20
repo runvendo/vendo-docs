@@ -5,6 +5,8 @@ description: Surface a structured needs_connection payload so the frontend can r
 
 `NotConnected` is raised by `vendo.data.execute` when the provider required by the action is not connected (`binding_missing` from the proxy). The correct response is to return a structured payload so the frontend can redirect the user to the connect portal.
 
+> `STRIPE_LIST_CUSTOMERS` in the example below is the Composio action id pattern — `<TOOLKIT>_<ACTION>` in SCREAMING_SNAKE_CASE. Confirm the exact spelling against [composio.dev](https://composio.dev) before shipping; the proxy is a pass-through and Vendo doesn't curate the action catalog.
+
 `connections.get(slug)` returns `None` / `null` (not `NotConnected`) when the provider is not connected. These are two different signals for two different code paths — see the comparison table below.
 
 ---
@@ -64,7 +66,7 @@ if (data.needs_connection) {
 }
 ```
 
-After the user connects, the portal closes and fires a `connection.connected` webhook. Your webhook handler calls `vendo.invalidate(slug)` and the next `data.execute` call succeeds.
+After the user connects, the portal closes and Vendo emits a `connection.connected` event on the SDK's SSE stream. Subscribe with `vendo.events.subscribe()` (or `client.events.subscribe()` on an instance) and call `vendo.invalidate(slug)` when you see the event — the next `data.execute` call then picks up the fresh binding without a process restart.
 
 ---
 

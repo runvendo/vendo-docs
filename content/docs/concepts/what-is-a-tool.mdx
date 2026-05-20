@@ -39,7 +39,7 @@ Only `deployment` tools are hosted by Vendo. The other two run on the tenant's h
   />
 </Cards>
 
-When in doubt, choose `deployment`. It's the path with the most batteries included: a public `{deployment_slug}.{tenant_slug}.vendo.run` URL, auto-provisioned TLS, env-var injection from connections, healthchecks, suspend/resume on credit exhaustion, and rollups in the tenant's billing dashboard. The other two types skip parts of this — you trade convenience for direct access to the user's machine.
+When in doubt, choose `deployment`. It's the path with the most batteries included: a public `{tenant_slug}-{deployment_slug}.vendo.run` URL (new deployments) or legacy `{deployment_slug}.{tenant_slug}.vendo.run` (preserved on rename for existing tools), auto-provisioned TLS via Vendo's wildcard certificate, env-var injection from connections, healthchecks, suspend/resume on credit exhaustion, and rollups in the tenant's billing dashboard. The other two types skip parts of this — you trade convenience for direct access to the user's machine.
 
 ## What a tenant sees vs what you author
 

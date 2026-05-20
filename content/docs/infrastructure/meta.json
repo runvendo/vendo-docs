@@ -6,6 +6,7 @@
     "subdomains",
     "the-proxy",
     "credentials-worker",
+    "background-workers",
     "logs-and-observability",
     "healthchecks",
     "secrets-and-env",

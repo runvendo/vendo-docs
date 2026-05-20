@@ -1,6 +1,6 @@
 ---
 title: Events
-description: Subscribe to server-sent events for real-time connection state changes.
+description: Subscribe to server-sent events for real-time connection and billing state changes.
 ---
 
 import { Tab, Tabs } from "fumadocs-ui/components/tabs";
@@ -10,13 +10,13 @@ import { Callout } from "fumadocs-ui/components/callout";
   Events require **Vendo mode** (`VENDO_API_KEY` must be set). `events.subscribe()` throws `VendoOnlyFeature` in OSS mode.
 </Callout>
 
-The `events` API delivers a live stream of connection-state changes over SSE. Use it to update your UI in real time or to trigger cache invalidation in your application.
+The `events` API delivers a live stream of connection and billing state changes over SSE. Use it to update your UI in real time or to trigger cache invalidation in your application.
 
 ## Subscribing
 
 <Tabs items={["Python", "TypeScript", "Swift"]}>
   <Tab value="Python">
-    `events.subscribe()` is an async context manager that yields event objects.
+    `events.subscribe()` yields `EventStreamMessage` objects. The SSE event name is on `event.type`; the parsed JSON payload is on `event.data`.
 
     ```python
     import asyncio
@@ -26,8 +26,8 @@ The `events` API delivers a live stream of connection-state changes over SSE. Us
         client = AsyncVendo()
         async with client.events.subscribe() as stream:
             async for event in stream:
-                print(event.kind, event.data)
-                if event.kind == "connection.connected":
+                print(event.type, event.data)
+                if event.type == "connection.connected":
                     slug = event.data.get("slug")
                     print(f"{slug} connected!")
 
@@ -37,7 +37,7 @@ The `events` API delivers a live stream of connection-state changes over SSE. Us
     Stop by `break`-ing the loop or cancelling the enclosing `Task`.
   </Tab>
   <Tab value="TypeScript">
-    `events.subscribe()` returns an async iterable.
+    `events.subscribe()` returns an async iterable. The SSE event name is on `event.type`; the parsed JSON payload is on `event.data`.
 
     ```typescript
     import { Vendo } from "@vendodev/sdk";
@@ -45,9 +45,9 @@ The `events` API delivers a live stream of connection-state changes over SSE. Us
     const vendo = new Vendo();
 
     for await (const event of vendo.events.subscribe()) {
-      console.log(event.kind, event.data);
-      if (event.kind === "connection.connected") {
-        const { slug } = event.data;
+      console.log(event.type, event.data);
+      if (event.type === "connection.connected") {
+        const { slug } = event.data as { slug: string };
         console.log(`${slug} connected!`);
       }
     }
@@ -97,25 +97,32 @@ The `events` API delivers a live stream of connection-state changes over SSE. Us
   </Tab>
 </Tabs>
 
-## Event types
+## Event kinds
 
-| `kind` / `type` | Data fields | Description |
-|-----------------|-------------|-------------|
-| `connection.connected` | `slug`, `connection_id` | User connected an integration |
-| `connection.disconnected` | `slug`, `connection_id` | User disconnected an integration |
-| `connection.needs_reauth` | `slug`, `connection_id` | OAuth token expired, user must re-authorize |
-| `connection.error` | `slug`, `message` | Connection entered an error state |
-| `billing.balance_low` | `credits_remaining_micros` | Balance below configured threshold |
-| `billing.balance_exhausted` | — | Balance hit zero |
-| `deployment.updated` | — | Deployment settings changed |
+The wire format names the event in the SSE `event:` field (which the SDKs surface as `event.type`). On the server this is the same string as the discriminator `kind` on the `VendoEvent` union — so for every emitted event the value is identical. Each event's `data` payload also carries `id`, `at`, and `kind` alongside the kind-specific fields below.
+
+| `event.type` (SSE name) | `data` payload fields | When it fires |
+|-------------------------|-----------------------|---------------|
+| `connection.connected` | `id`, `at`, `kind`, `slug`, `connection_id` | A connection for this tenant was created |
+| `connection.disconnected` | `id`, `at`, `kind`, `slug`, `connection_id` | A connection was removed |
+| `connection.changed` | `id`, `at`, `kind`, `slug`, `connection_id` | The connection row's non-status fields changed (display name, metadata) |
+| `connection.status_changed` | `id`, `at`, `kind`, `slug`, `connection_id`, `status` | Status transitioned. `status` is one of `connected`, `available`, `pending_setup`, `needs_reauth`, `error`, `revoked` |
+| `billing.usage_recorded` | `id`, `at`, `kind`, `provider`, `micros` | A usage event was billed against the tenant's balance |
+| `billing.balance_changed` | `id`, `at`, `kind`, `remaining_micros` | The wallet balance changed (top-up, settle, refund) |
+| `billing.cap_warned` | `id`, `at`, `kind`, `window`, `pct` | Approaching a daily or monthly spend cap. `window` is `daily` or `monthly`; `pct` is the percentage consumed |
+| `billing.cap_tripped` | `id`, `at`, `kind`, `window` | A spend cap fired and is now blocking calls until the window resets |
+
+To detect "this connection needs re-auth", listen for `connection.status_changed` with `status === "needs_reauth"`. There is no standalone `connection.needs_reauth` kind.
 
 ## Auto-reconnect
 
 The stream reconnects automatically with exponential backoff on transient failures:
 
-- Network drop: reconnects immediately, then backs off (1s, 2s, 4s, ... up to 60s)
-- SSE endpoint returns 5xx: same backoff
-- Three consecutive reconnect failures: the stream yields an error event and closes
+- Initial reconnect delay: 1s, doubling each attempt
+- Maximum backoff: 30s (with ~25% jitter)
+- Loop is unbounded — both the Python and TypeScript SDKs keep reconnecting until you `break` out of the iterator (Python) or abort the `AbortSignal` (TypeScript)
+
+There is no fail-after-N-attempts policy; if you want to surface persistent connection failures, observe the TypeScript `onReconnect(attempt, err)` callback (or wrap the Python iterator) and decide how many attempts to tolerate yourself.
 
 ## Using events with the reconciler
 

@@ -52,7 +52,7 @@ let botToken  = try await vendo.token("telegram") // reads TELEGRAM_BOT_TOKEN
 
 ## Vendo mode (OAuth refresh + managed keys)
 
-Set `VENDO_API_KEY` in the environment:
+Set `VENDO_API_KEY` in the environment. Keys start with the `vendo_sk_` prefix and are sent as `Authorization: Bearer <key>` to the proxy.
 
 ```bash
 VENDO_API_KEY=vendo_sk_...
@@ -70,9 +70,23 @@ let balance     = try await vendo.billing.balance()
 
 ## Bulk tokens
 
+The return type is `[String: String?]` — slugs with no resolvable credential map to `nil`:
+
 ```swift
 let tokens = try await vendo.tokens(["openai", "anthropic", "slack"])
-// ["openai": "sk-...", "anthropic": "sk-ant-...", "slack": "xoxb-..."]
+// ["openai": Optional("sk-..."), "anthropic": Optional("sk-ant-..."), "slack": nil]
+```
+
+## Per-slug override (escape hatch)
+
+Set `VENDO_TOKEN_<UPPER_SLUG>` to short-circuit the resolution chain for a specific slug. This wins over both Vendo mode and the BYOK env var, and is useful when testing a custom integration that isn't in the catalog:
+
+```bash
+VENDO_TOKEN_MYTOOL=sk-test-...
+```
+
+```swift
+try await vendo.token("mytool") // returns the override value
 ```
 
 ## Next steps

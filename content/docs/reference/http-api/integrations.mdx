@@ -1,0 +1,209 @@
+---
+title: Integrations
+description: Tenant-level integration catalog and CRUD — list, toggle, regenerate, usage.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+These endpoints back the dashboard's `/connections/integrations` page. They list every integration in the Vendo catalog and let the calling tenant toggle, regenerate, or inspect usage per provider. All four are session-authenticated except for the public-mode list path, which serves anonymous SDK/connect-portal callers a canonical-shape catalog.
+
+## `GET /api/integrations`
+
+Lists every enabled integration. Signed-in callers get tenant-specific state (`tenantEnabled`, `provisioned`, current-month usage); anonymous callers get the canonical public shape (no tenant state).
+
+### Auth
+
+Optional session cookie. With no session, returns the public catalog. With a session, returns the tenant-enriched catalog. Anonymous responses are cached for 5 minutes.
+
+### Response: `200 OK` — anonymous (public)
+
+```json
+{
+  "integrations": [
+    {
+      "provider": "openrouter",
+      "name": "OpenRouter",
+      "description": "Unified gateway for LLM providers.",
+      "category": "llm",
+      "default_profile": "vendo_managed_pool",
+      "supported_profiles": ["vendo_managed_pool"],
+      "logo_url": "https://vendo.run/logos/openrouter.svg",
+      "icon_name": null,
+      "docs_url": "https://openrouter.ai/docs",
+      "env_bootstrap": { "vars": [...], "restart": "gateway" }
+    }
+  ]
+}
+```
+
+Shape comes from `rowToCanonical()` in `web/src/lib/integrations/canonical-shape.ts`.
+
+### Response: `200 OK` — session-authed
+
+Returns an **array** (not wrapped in `integrations`) where each row mirrors the `integrations` table columns plus three tenant-specific fields:
+
+```jsonc
+[
+  {
+    "id": "00000000-0000-0000-0000-000000000000",
+    "provider": "openrouter",
+    "name": "OpenRouter",
+    "description": "…",
+    "category": "llm",
+    "enabled": true,
+    "default_profile": "vendo_managed_pool",
+    "supported_profiles": ["vendo_managed_pool"],
+    "logo_url": "…",
+    "docs_url": "…",
+    "env_bootstrap": { "vars": [...], "restart": "gateway" },
+    // …other catalog columns…
+
+    // Tenant overlay:
+    "tenantEnabled": true,           // tenant_integrations.enabled OR has an active connection
+    "provisioned": true,             // has an active `connections` row for this provider
+    "usageThisMonth": 142,           // count of usage_events since start of month
+    "costThisMonth": 1235000         // sum of usage_events.cost_micros since start of month
+  }
+]
+```
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `404` | `{ "message": "No workspace found" }` | Signed-in user has no production tenant |
+| `500` | `{ "message": "Internal server error" }` | Vendo bug |
+
+## `GET /api/integrations/{slug}`
+
+Detail for one integration. Like the list endpoint, the response shape depends on whether the caller is signed in.
+
+### Auth
+
+Optional session cookie. Anonymous responses are cached 5 minutes.
+
+### Response: `200 OK`
+
+- Anonymous → the canonical-shape row for this provider (404 if not enabled).
+- Signed-in → the full `integrations` row plus `tenantEnabled: boolean`.
+
+For OpenRouter, `tenantEnabled` falls back to checking for an active `byok_static` connection in the `connections` table when the `tenant_integrations.enabled` flag is unset.
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `404` | `{ "message": "Not found" }` | Unknown slug or (anonymous) disabled integration |
+| `500` | `{ "message": "Internal server error" }` | Vendo bug |
+
+## `POST /api/integrations/{slug}`
+
+Toggle the calling tenant's enabled state for an integration. For `elevenlabs` and `assemblyai` this also writes a managed-pool `connections` stub row so the proxy can resolve credentials.
+
+### Auth
+
+Session cookie.
+
+### Request body
+
+```json
+{ "enabled": true }
+```
+
+### Response: `200 OK`
+
+```json
+{ "enabled": true }
+```
+
+If provisioning failed (only relevant for `elevenlabs` / `assemblyai`), the response still returns `200` with a soft warning:
+
+```json
+{ "enabled": true, "error": "<error message>" }
+```
+
+The toggle is persisted either way — KV is re-synced so the proxy sees the new state.
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `401` | `{ "message": "Unauthorized" }` | No session |
+| `404` | `{ "message": "Not found" }` | Unknown slug or no tenant |
+| `429` | `{ "message": "Rate limit exceeded" }` | `integrationLimiter` exceeded |
+| `500` | `{ "message": "Internal server error" }` | Vendo bug |
+
+## `POST /api/integrations/{slug}/regenerate`
+
+Endpoint exists for future BYOK redesign. Today every live integration runs on `vendo_managed_pool` (shared upstream credential), so there's no per-tenant key to rotate.
+
+### Auth
+
+Session cookie.
+
+### Response: `400 Bad Request`
+
+```json
+{ "message": "This integration does not support key regeneration" }
+```
+
+For `openrouter` specifically:
+
+```json
+{ "message": "OpenRouter does not support regeneration; managed by shared upstream credential" }
+```
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `401` | `{ "message": "Unauthorized" }` | No session |
+| `404` | `{ "message": "No workspace" }` or `"Integration not found"` | No tenant / unknown slug |
+| `400` | `{ "message": "Integration not provisioned" }` | Tenant never enabled the integration |
+| `400` | `{ "message": "This integration does not support key regeneration" }` | BYOK regeneration is deferred (all live integrations) |
+| `429` | `{ "message": "Rate limit exceeded" }` | `integrationLimiter` exceeded |
+| `500` | `{ "message": "Internal server error" }` | Vendo bug |
+
+## `GET /api/integrations/{slug}/usage`
+
+Aggregate usage and cost for one integration, scoped to the calling tenant. Powers the per-integration usage chart on the dashboard.
+
+### Auth
+
+Session cookie.
+
+### Response: `200 OK`
+
+```json
+{
+  "provider": { "source": "usage_events" },
+  "dailyTrend": [
+    { "date": "2026-05-01", "events": 42, "cost": 1234 }
+  ],
+  "spend_daily_usd": 0.18,
+  "spend_weekly_usd": 1.42,
+  "spend_monthly_usd": 5.07
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `provider` | `object \| null` | Per-provider native usage payload. Only OpenRouter returns a non-null object today (`{ source: "usage_events" }`) — every other integration returns `null` here and the spend rollup below is canonical. |
+| `dailyTrend` | `{ date, events, cost }[]` | 30-day daily trend. `cost` is in micros. |
+| `spend_daily_usd` | `number` | USD, since start of day |
+| `spend_weekly_usd` | `number` | USD, since start of ISO week |
+| `spend_monthly_usd` | `number` | USD, since start of month |
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `401` | `{ "message": "Unauthorized" }` | No session |
+| `404` | `{ "message": "No workspace" }` or `"Not found"` | No tenant or unknown slug |
+| `500` | `{ "message": "Internal server error" }` | Vendo bug |
+
+### Related
+
+- [Apps](apps) — bind a connection to a deployed app
+- [Connections (runtime)](connections) — what deployed tools see for these integrations
+- [Concepts > Connections](/docs/concepts/connections-and-integrations)

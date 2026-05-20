@@ -60,8 +60,9 @@ Connections come in a few flavours (Vendo calls these *profiles*). You generally
 |---|---|
 | `byok_static` | Tenant pasted it (e.g. a Telegram bot token, a personal OpenAI key) |
 | `vendo_managed_pool` | Vendo issues the tenant a proxy key drawn from a shared pool |
-| `oauth_app_install` | Tenant ran an OAuth flow with Vendo's app credentials |
-| `composio_managed` | Vendo brokered the OAuth via Composio; refresh handled upstream |
+| `user_oauth` | Tenant ran an OAuth flow against the upstream provider (their own user account) |
+| `oauth_app_install` | Tenant installed Vendo's OAuth app at the upstream (workspace-level grant) |
+| `webhook_inbound` | Provider pushes events into Vendo via a webhook URL the tenant configured |
 
 For OAuth profiles, the actual upstream access token is short-lived and refreshed transparently. Your tool never sees a stale token.
 

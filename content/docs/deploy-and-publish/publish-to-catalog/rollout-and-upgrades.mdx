@@ -11,13 +11,14 @@ Cutting a new release ([Versioning & releases](/docs/deploy-and-publish/publish-
 
 The deploy worker has a dedicated `UpgradeWorkflow` ([`cloudflare/deploy-worker/src/workflows/upgrade.ts`](https://github.com/runvendo/vendo/blob/main/cloudflare/deploy-worker/src/workflows/upgrade.ts)) that:
 
-1. Fetches the new active release manifest from R2.
-2. Validates it against the schema.
-3. Re-resolves env vars (picks up any new placeholders or integrations).
-4. Swaps the container image tag on each Railway service via `serviceInstanceUpdate({ source: { image } })`.
-5. Redeploys each service.
-6. Re-runs the readiness check.
-7. Updates `deployments.manifest` to the new snapshot and advances `tool_release_id`.
+1. `fetch_deployment` — loads the current deployment row.
+2. `resolve_upgrade_env` (or `fetch_upgrade_image_services` for image-only bumps) — re-resolves env vars so new placeholders or integration bindings get picked up.
+3. `snapshot_current` — writes `deployments.previousTemplateVersion` = the current `bundle_version` so a rollback has somewhere to land.
+4. `upgrade_compute` — calls `serviceInstanceUpdate({ source: { image } })` on each Railway service and triggers a redeploy.
+5. `await_ready_*` — polls the readiness endpoint until it returns 2xx.
+6. `finalize` — flips the deployment back to `status='running'` and `progress: 100`.
+
+The web API writes `deployments.bundle_version` to the target version before firing the workflow, so the row's version pin is what tenants see while the upgrade is in flight. `deployments.manifest` is also updated to the new snapshot. There is no `tool_release_id` column; pinning is via `deployments.deployed_template_version` (varchar) and the manifest JSONB.
 
 If the health check fails after the image swap, the deployment is marked `failed` — Railway keeps the old running revision because redeploy is not destructive.
 
@@ -25,13 +26,15 @@ If the health check fails after the image swap, the deployment is marked `failed
 Without the image swap, redeploying just reruns the previously-set image. The image tag has to change for the upgrade to actually pull new code.
 </Callout>
 
-## Tenant-driven vs platform-driven upgrades
+## Tenant-driven vs platform-driven vs auto-update
 
-**Tenant-driven** is the default. The dashboard shows an "Update available" banner on deployments whose pinned `tool_release_id` is older than the active release. The tenant clicks Update, which POSTs to `/api/deployments/[id]/upgrade` and kicks off the workflow.
+Three upgrade paths exist, only one of which the tenant initiates:
 
-**Platform-driven** is what you do for security patches or hot fixes — you initiate the upgrade on every affected deployment without waiting for the tenant.
+- **Tenant-driven upgrade.** The dashboard shows an "Update available" banner on deployments whose `deployments.deployed_template_version` is older than the active `tool_releases.template_version`. The tenant clicks Update, which POSTs to `/api/deployments/[id]/upgrade` and kicks off `UpgradeWorkflow`. This is the default path.
+- **Platform-driven upgrade.** For a security patch or hot fix — a Vendo operator (or a tool author with admin access) initiates the upgrade on every affected deployment without waiting for the tenant.
+- **Auto-update (customize-enabled tools).** `workers/update-watcher` runs hourly (cron `"0 * * * *"`). For deployments backed by a customize-enabled tool, it detects upstream commits, queues a `pending_updates` row, and fires `UpdateWorkflow` in the deploy worker (resolver → judge → gate). Depending on the gate's decision the patch is either auto-applied or surfaced to the tenant for confirmation. The watcher honors a weekly cap (default 5/week) and per-deployment `auto_update_paused_at`. See [Updating a tool](/docs/deploy-and-publish/operate/updating-a-tool) for the full description.
 
-There is no automatic background upgrade. Vendo never silently changes a tenant's running version.
+The manifest-driven release-upgrade path (the focus of this page) never auto-applies — only the customize/update-watcher path does, and it only touches tools that explicitly opt in.
 
 ## Rolling out a patch (mass upgrade)
 
@@ -41,14 +44,13 @@ For a security patch or fix where every existing deployment should move:
 2. Query for deployments still on old versions:
 
    ```sql
-   SELECT id, tenant_id, tool_release_id, status
-   FROM deployments
-   WHERE tool_slug = 'my-tool'
-     AND status = 'running'
-     AND tool_release_id IN (
-       SELECT id FROM tool_releases
-       WHERE tool_slug = 'my-tool' AND status = 'inactive'
-     );
+   SELECT d.id, d.tenant_id, d.deployed_template_version, d.status
+   FROM deployments d
+   JOIN apps_catalog t ON t.slug = d.tool_slug
+   JOIN tool_releases tr ON tr.tool_id = t.id AND tr.status = 'active'
+   WHERE d.tool_slug = 'my-tool'
+     AND d.status = 'running'
+     AND d.deployed_template_version <> tr.template_version;
    ```
 
 3. For each row, POST `/api/deployments/[id]/upgrade` via an admin script. Rate-limit so you don't saturate Railway.
@@ -65,15 +67,19 @@ Rollback is just an upgrade aimed backwards:
 
 Old manifest versions stay in R2 indefinitely. The image tag you reference has to still exist in its registry — if you garbage-collected `ghcr.io/me/my-tool:1.0.3`, rollback fails.
 
-## Restart vs upgrade vs redeploy
+## Deployment management endpoints
 
-| Operation | Image | Manifest | Env vars | Use when |
-|---|---|---|---|---|
-| **Restart** | Same | Same | Reapplied | Env var change took effect after edit |
-| **Upgrade** | New | New | Re-resolved | Shipping a new release |
-| **Retry (failed → pending)** | Same | Same | Same | A previous deploy died midway |
+| Endpoint | What it does | When to use |
+|---|---|---|
+| `POST /api/deployments/[id]/restart` | Pushes every `deployment_env_vars` row into Railway via `variableUpsert` and redeploys each service. Status flows `running → restarting → running`. | Env var edits, transient crash loops, a fresh boot without a new image. |
+| `POST /api/deployments/[id]/upgrade` | Runs `UpgradeWorkflow` — re-resolves env vars, swaps image tag, redeploys, polls readiness. Updates `deployments.manifest`, `bundle_version`, `deployed_template_version`. | Shipping a new release. |
+| `POST /api/deployments/[id]/retry` | Spawns a fresh `DeployWorkflow` that re-runs idempotent phases on a `failed` row. Reuses the original `vendo_api_key`, admin password, and user env vars — no state lost. | A previous deploy died midway. |
+| `POST /api/deployments/[id]/rollback` | Swaps `bundle_version` ↔ `previousTemplateVersion` and fires the deploy worker's `/upgrade` endpoint with the previous version. | Undoing a release that's already in production. |
+| `POST /api/deployments/[id]/suspend` | Runs `SuspendWorkflow` — Railway `deploymentRemove`, Neon compute pause, app proxy flips to status-page mode. | Pausing a deployment without losing state. |
+| `POST /api/deployments/[id]/resume` | Runs `ResumeWorkflow` — databases first, then compute, then readiness. | Bringing a suspended deployment back. |
+| `POST /api/deployments/[id]/destroy` | Runs `TeardownWorkflow` — destructive. See [Teardown](/docs/deploy-and-publish/operate/teardown). | Permanent decommission. |
 
-`POST /restart` runs the `RestartWorkflow` which pushes every `deployment_env_vars` row into Railway via `variableUpsert` and redeploys. `POST /upgrade` runs the `UpgradeWorkflow` described above. `POST /retry` (only valid on `failed` rows) spins up a fresh `DeployWorkflow` that picks up where the previous attempt died — every step is idempotent.
+All seven endpoints are tenant-callable from the dashboard. None require operator intervention.
 
 ## Suspend/resume during rollout
 

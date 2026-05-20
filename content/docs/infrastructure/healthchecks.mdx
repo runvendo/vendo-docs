@@ -10,12 +10,12 @@ Vendo polls every running `deployment` tool with an HTTP healthcheck. If you shi
 Your tool MUST serve a healthcheck endpoint that:
 
 - Responds to `GET` over plain HTTP (no auth, no cookies).
-- Returns `200` when the tool is healthy.
+- Returns a `2xx` status when the tool is healthy (`200` and `204` both pass — the probe checks `response.ok`).
 - Returns within 10 seconds.
 
 The default path is `/healthz`. Your template manifest can override this with the `healthEndpoint` field — pick a path that doesn't collide with your app routes (`/health`, `/api/health`, `/_healthz` are all fine).
 
-Anything else — `2xx` other than `200`, `3xx`, `4xx`, `5xx`, or timeout — counts as unhealthy.
+Anything outside `2xx` — `3xx`, `4xx`, `5xx`, or a timeout — counts as unhealthy.
 
 ## What "healthy" should mean
 
@@ -30,7 +30,9 @@ Avoid heavy work in the healthcheck path. No DB writes, no external API calls (y
 
 Vendo's `health-monitor` worker probes every running deployment every 15 minutes. The interval is deliberate — Neon Postgres can scale to zero after ~10 minutes idle, and probing more often would wake the database back up on every tick.
 
-After **3 consecutive failures** (~45 minutes), your deployment's `health_status` flips to `degraded`. After 2 consecutive successes it flips back to `healthy`. There's no flap protection beyond that — if you genuinely fail and recover within one tick, you bounce.
+After **3 consecutive failures** (~45 minutes), your deployment's `health_status` flips to `degraded`. A **single** successful probe resets the failure counter and flips status back to `healthy` immediately — there's no recovery debounce. If you flap, the dashboard flaps with you.
+
+Every probe writes a row to the `health_checks` table (status, status code, response time, error message). It's the canonical debug surface for "when did this start failing."
 
 ## What "degraded" actually does
 

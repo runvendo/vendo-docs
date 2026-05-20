@@ -1,20 +1,45 @@
 ---
 title: Recipes
-description: Copy-paste recipes showing Python, TypeScript, and Swift side-by-side.
+description: Copy-paste recipes showing Python and TypeScript (and Swift where applicable) side-by-side.
 ---
 
 import { Card, Cards } from "fumadocs-ui/components/card";
 
-Every recipe shows the same working example in all three languages using language tabs.
+Each recipe is a single, copy-pasteable example for one task — short, exact code with the failure paths spelled out. Pick the language tab you want and paste.
 
 ## Recipes
 
 <Cards>
   <Card
     title="Telegram bot"
-    description="Send a message via the Telegram Bot API using a Vendo token"
+    description="Send a Telegram message using a Vendo-resolved bot token."
     href="/docs/guides/recipes/telegram-bot"
+  />
+  <Card
+    title="Call a Composio action"
+    description="Run any Composio action against the tenant's bound accounts via vendo.data.execute."
+    href="/docs/guides/recipes/call-composio-action"
+  />
+  <Card
+    title="Handle NotConnected"
+    description="Return a structured needs_connection payload when a binding is missing."
+    href="/docs/guides/recipes/handle-not-connected"
+  />
+  <Card
+    title="Poll credit balance"
+    description="Read the tenant's prepaid balance, gate expensive operations, handle OSS mode."
+    href="/docs/guides/recipes/poll-balance"
+  />
+  <Card
+    title="Read Supabase users"
+    description="Query auth.users from the connection's context-resolved project ref."
+    href="/docs/guides/recipes/read-supabase-users"
+  />
+  <Card
+    title="Verify a webhook"
+    description="HMAC-verify a Vendo-forwarded webhook and consume lifecycle events over SSE."
+    href="/docs/guides/recipes/verify-webhook"
   />
 </Cards>
 
-More recipes coming soon. Each recipe lives in `content/docs/guides/recipes/` as an MDX file. Use `<Tabs items={["Python", "TypeScript", "Swift"]}>` for language tabs and keep the same logical example across all three tabs so readers can compare directly.
+Each recipe lives in `content/docs/guides/recipes/` as an MDX file. Use `<Tabs items={["Python", "TypeScript", "Swift"]}>` for language tabs and keep the same logical example across all three so readers can compare directly.

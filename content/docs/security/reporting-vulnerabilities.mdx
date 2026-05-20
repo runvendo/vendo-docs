@@ -3,6 +3,8 @@ title: Reporting vulnerabilities
 description: How to report a security issue in Vendo, what to include, and what to expect in response.
 ---
 
+{/* TODO(security): confirm `security@vendo.run` mailbox exists and is monitored before publishing — the address is not referenced anywhere in the monorepo. If it doesn't exist, replace below with a GitHub Security Advisory link on the appropriate vendo repo, or another verified channel. */}
+
 import { Callout } from "fumadocs-ui/components/callout";
 
 If you believe you've found a security vulnerability in Vendo's platform — the dashboard, the proxies, the deploy worker, the credentials worker, the SDKs, or anything Vendo itself runs — please report it privately rather than opening a public issue.
@@ -33,7 +35,7 @@ In scope for a vulnerability report:
 - The integration proxies at `*-proxy.vendo.run` and the credentials worker at `credentials.vendo.run`.
 - The app proxy that fronts deployments at `*.vendo.run`.
 - The deploy and hooks workers.
-- The published Vendo SDKs (Python, TypeScript, Swift) and the public `/api/v1/*` endpoints.
+- The published Vendo SDKs (Python and TypeScript) and the public `/api/v1/*` endpoints.
 
 ## What's out of scope
 

@@ -26,20 +26,22 @@ After the migration applies, new deploys get the new version. Existing deploys k
 
 `POST /api/deployments/[id]/upgrade` triggers `UpgradeWorkflow` in the deploy worker. The workflow:
 
-1. Fetches the new active release manifest.
-2. Re-resolves env vars (so new placeholders or new integration bindings get picked up).
-3. Calls `serviceInstanceUpdate({ source: { image } })` on each Railway service to change the image tag.
-4. Redeploys each service.
-5. Polls the readiness endpoint.
-6. On success, snaps `deployments.manifest` to the new version and advances `tool_release_id`.
+1. `fetch_deployment` — load the current row.
+2. `resolve_upgrade_env` (or `fetch_upgrade_image_services` for image-only bumps) — re-resolve env vars so new placeholders / integration bindings are picked up.
+3. `snapshot_current` — write `deployments.previousTemplateVersion` so rollback has a target.
+4. `upgrade_compute` — call `serviceInstanceUpdate({ source: { image } })` on each Railway service and redeploy.
+5. `await_ready_*` — poll the readiness endpoint.
+6. `finalize` — flip back to `running`, `progress: 100`. The web API writes `deployments.bundle_version` to the target version before firing, and `deployments.manifest` is updated to the new snapshot.
+
+Pinning is via `deployments.deployed_template_version` (varchar) and the manifest JSONB. There is no `tool_release_id` column on `deployments` — the dashboard compares `deployed_template_version` against `tool_releases.template_version` to decide whether an update is available.
 
 <Callout type="warn">
-Step 3 is the load-bearing one. If you forget to bump the image tag (e.g. you re-cut `1.0.0` with new code instead of releasing `1.0.1`), Railway redeploys against the same image SHA and nothing changes.
+Step 4 is the load-bearing one. If you forget to bump the image tag (e.g. you re-cut `1.0.0` with new code instead of releasing `1.0.1`), Railway redeploys against the same image SHA and nothing changes.
 </Callout>
 
 ## Tenant-initiated upgrade
 
-The dashboard shows an "Update available" banner on any deployment whose `tool_release_id` is older than the current active release. The tenant clicks Update, the workflow runs, and on success their deployment is on the new version. Failures show in `deploy_logs` and the deployment goes to `failed` — they can retry, or roll back via support.
+The dashboard shows an "Update available" banner on any deployment whose `deployed_template_version` is older than the active release's `template_version`. The tenant clicks Update, the workflow runs, and on success their deployment is on the new version. Failures show in `deploy_logs` and the deployment goes to `failed` — they can retry, or roll back via `POST /api/deployments/[id]/rollback`.
 
 This is the path you want by default. Tenants control when their workload updates.
 
@@ -51,7 +53,17 @@ For a security patch or a bug fix that should reach every tenant:
 2. Query for deployments still pinned to old versions (see [Rollout & upgrades](/docs/deploy-and-publish/publish-to-catalog/rollout-and-upgrades)).
 3. Script the per-deployment upgrade calls. Rate-limit; you don't want every tenant of your tool redeploying simultaneously.
 
-There's no automatic background upgrade. Vendo treats running deployments as the tenant's workload — silently changing the running version would be a trust break.
+## Automatic update path (customize-enabled tools)
+
+A second, distinct upgrade path exists for **customize-enabled** tools (those that opt into per-tenant code mutation). `workers/update-watcher` is an hourly cron (`"0 * * * *"`) that:
+
+1. Selects every `apps_catalog` row with `enabled=true AND tool_type='deployment'`, checks each for upstream HEAD changes since the last poll.
+2. For each running deployment of that tool (with `auto_update_paused_at IS NULL` and a `deployment_repos` R2 bundle present), checks cadence + weekly cap + in-flight, then INSERTs a `pending_updates` row and fires `UpdateWorkflow` in the deploy worker.
+3. `UpdateWorkflow` runs resolver → judge → gate. The gate either **auto-applies** the patch (deploy worker calls `/upgrade`) or **pauses for user confirmation** — surfaced in the dashboard as a banner the tenant decides on via `POST /api/deployments/[id]/updates/[updateId]/decide`.
+
+This path is opt-in per tool (customize is not the default) and capped at 5 updates/deployment/week. The manifest-driven release upgrade path covered above never auto-applies — only the customize/update-watcher path does.
+
+For tools that don't opt into customize, Vendo treats running deployments as the tenant's workload and never silently changes the running version.
 
 ## What survives an upgrade
 
@@ -79,7 +91,7 @@ Two patterns:
 
 Cut a new release pointing at the previous manifest version, then upgrade. Old manifest versions stay in R2; old image tags stay wherever you publish them. If you garbage-collected the old image tag, rollback fails — keep at least the most recent N tags retained in your registry.
 
-Tenant-initiated rollback isn't exposed in the UI. Roll back via support if you need to undo a release that's already in production.
+Tenant-initiated rollback is exposed at `POST /api/deployments/[id]/rollback`. The route swaps `deployments.bundleVersion` ↔ `deployments.previousTemplateVersion` and fires the deploy worker's `/upgrade` endpoint with the previous version as target — so the same idempotent `UpgradeWorkflow` runs in reverse. The dashboard surfaces this as a button on failed/recent-update deployments.
 
 ## Restart without upgrade
 

@@ -50,15 +50,29 @@ No Vendo account. Set the conventional env var for each integration.
     TELEGRAM_BOT_TOKEN=12345:abcde
     ```
 
+    The `Vendo` class constructor requires an API key. In OSS mode there is no Vendo key, so use the module-level helpers (`getCredential`, `primaryEnvVar`) which read the BYOK catalog without instantiating a client:
+
     ```typescript
-    import { Vendo, isVendoMode } from "@vendodev/sdk";
+    import { getCredential, isVendoMode } from "@vendodev/sdk";
 
-    const vendo = new Vendo(); // no VENDO_API_KEY → OSS mode
+    const tok = await getCredential("openai");    // returns OPENAI_API_KEY
+    const bot = await getCredential("telegram");  // returns TELEGRAM_BOT_TOKEN
 
-    const tok = await vendo.token("openai");    // returns OPENAI_API_KEY
-    const bot = await vendo.token("telegram");  // returns TELEGRAM_BOT_TOKEN
+    isVendoMode(); // false (VENDO_API_KEY not set)
+    ```
 
-    isVendoMode(); // false
+    If you want a single code path that works in both modes — and you're prepared to handle the constructor throwing in OSS — fall back to the helper:
+
+    ```typescript
+    import { Vendo, getCredential } from "@vendodev/sdk";
+
+    async function token(slug: string): Promise<string> {
+      try {
+        return await new Vendo().token(slug); // Vendo mode if VENDO_API_KEY set
+      } catch {
+        return await getCredential(slug);     // OSS / BYOK fallback
+      }
+    }
     ```
   </Tab>
   <Tab value="Swift">

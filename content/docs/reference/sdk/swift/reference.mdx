@@ -1,0 +1,414 @@
+---
+title: Swift SDK Reference
+description: Full method reference for vendo-sdk-swift. Sourced from vendo-sdk-swift.
+---
+
+Sourced from `vendo-sdk-swift` (`Sources/Vendo/`). Every public method on the
+`Vendo` actor is documented here, plus the `BYOK` namespace and shared model
+types.
+
+```swift
+import Vendo
+
+let vendo = try Vendo()
+```
+
+`Vendo` is an `actor`. Sub-API properties (`connections`, `billing`, etc.) are
+declared `nonisolated`, so synchronous access does not require `await`; the
+actor's own async methods (`token`, `forUser`, etc.) do.
+
+---
+
+## Vendo (init)
+
+```swift
+public init(
+    apiKey: String? = nil,
+    baseURL: String? = nil,
+    apiVersion: String = "2026-05-07",
+    userJWT: String? = nil,
+    env: [String: String] = ProcessInfo.processInfo.environment
+) throws
+```
+
+- `apiKey` — falls back to `env["VENDO_API_KEY"]`. Throws
+  `VendoError.auth(message:code:)` when both are absent / empty.
+- `baseURL` — falls back to `env["VENDO_BASE_URL"]`, then
+  `"https://vendo.run"`. Every call site prefixes `/api/…`, so do **not** include
+  `/api` in `baseURL`.
+- `apiVersion` — sent as `Vendo-API-Version` header.
+- `userJWT` — when set, every request adds `X-Vendo-User-JWT`.
+- `env` — pass a controlled dict in tests.
+
+```swift
+let vendo = try Vendo(apiKey: "vendo_sk_...")
+```
+
+---
+
+## token
+
+```swift
+public func token(_ slug: String) async throws -> String
+```
+
+Resolves a token. Resolution order:
+
+1. `VENDO_TOKEN_<UPPER_SLUG>` env override (any mode).
+2. Vendo mode (`VENDO_API_KEY` set): in-memory cache, then
+   `credentials.vendo.run/<slug>`.
+3. BYOK mode: primary env var from the bundled `byok.json`.
+4. Throws `VendoError.notConnected(slug:message:)` if nothing matches.
+
+```swift
+let openai = try await vendo.token("openai")
+```
+
+---
+
+## tokens
+
+```swift
+public func tokens(_ slugs: [String]) async throws -> [String: String?]
+```
+
+Bulk resolution. Slugs with no token map to `nil`.
+
+```swift
+let map = try await vendo.tokens(["openai", "anthropic"])
+// ["openai": "sk-...", "anthropic": nil]
+```
+
+---
+
+## invalidate
+
+```swift
+public func invalidate(_ slug: String)
+```
+
+Evicts the cached token for a slug. Async (because `Vendo` is an actor) but
+performs no I/O.
+
+---
+
+## forUser
+
+```swift
+public func forUser(jwt: String) throws -> Vendo
+```
+
+Returns a new `Vendo` instance whose every request injects
+`X-Vendo-User-JWT: <jwt>`.
+
+---
+
+## forRequest
+
+```swift
+public func forRequest(headers: [String: String]) throws -> Vendo
+```
+
+Reads `X-Vendo-User-JWT` (case-insensitive) and returns a user-scoped
+`Vendo` instance.
+
+**Throws:**
+- `VendoError.vendoOnlyFeature` — in OSS mode.
+- `VendoError.identityNotPresent` — when the header is absent.
+
+---
+
+## connectURL
+
+```swift
+public func connectURL(
+    slug: String,
+    returnTo: String? = nil,
+    state: String? = nil
+) throws -> URL
+```
+
+Builds a Vendo Connect URL. Vendo mode only.
+
+A static variant is also available:
+
+```swift
+public static func connectURL(
+    slug: String,
+    apiKey: String,
+    baseURL: String = "https://vendo.run",
+    returnTo: String? = nil,
+    state: String? = nil,
+    env: [String: String] = ProcessInfo.processInfo.environment
+) throws -> URL
+```
+
+---
+
+## connections.list
+
+```swift
+try await vendo.connections.list() -> [Connection]
+```
+
+Calls `GET /api/deployments/me/connections`.
+
+---
+
+## connections.get
+
+```swift
+try await vendo.connections.get(slug: String) -> Connection?
+```
+
+Returns the matching `Connection` or `nil` if the slug is absent from this
+deployment's catalog.
+
+---
+
+## integrations.list
+
+```swift
+try await vendo.integrations.list() -> [Integration]
+```
+
+---
+
+## integrations.get
+
+```swift
+try await vendo.integrations.get(slug: String) -> Integration?
+```
+
+Returns `nil` when the slug is absent from the catalog (404 mapped to `nil`).
+
+---
+
+## integrations.envVars
+
+```swift
+vendo.integrations.envVars(for slug: String) -> [String]
+```
+
+Reads from the bundled BYOK catalog. No network call. Returns `[]` for
+unknown slugs.
+
+---
+
+## billing.balance
+
+```swift
+try await vendo.billing.balance() -> Balance
+```
+
+Calls `GET /api/billing/balance`. Vendo mode only.
+
+---
+
+## billing.spendCaps
+
+```swift
+try await vendo.billing.spendCaps() -> SpendCaps
+```
+
+Returns a single `SpendCaps` struct (not an array).
+
+---
+
+## billing.usage
+
+```swift
+try await vendo.billing.usage(period: BillingPeriod = .month) -> AnyCodable
+```
+
+`BillingPeriod` is `.day` or `.month`. Result is the raw JSON wrapped in
+`AnyCodable`.
+
+---
+
+## events.subscribe
+
+```swift
+try vendo.events.subscribe(maxBackoffSeconds: TimeInterval = 30) -> EventsAsyncSequence
+```
+
+`EventsAsyncSequence` is an `AsyncSequence` of `EventStreamMessage`. Iteration
+auto-reconnects on transient errors with exponential backoff capped at
+`maxBackoffSeconds`.
+
+```swift
+for try await event in try vendo.events.subscribe() {
+    print(event.type, event.data)
+}
+```
+
+---
+
+## webhooks (WebhooksAPI)
+
+```swift
+public init(secret: String? = nil, maxAgeSeconds: Int = 300)
+
+public func verify(headers: [String: String], body: String) throws -> WebhookEvent
+```
+
+`secret` and `maxAgeSeconds` are constructor parameters. `verify(...)` takes
+only `(headers, body)`. When `secret:` is omitted, the verifier reads
+`VENDO_WEBHOOK_SECRET` from `ProcessInfo.processInfo.environment`.
+
+```swift
+let webhooks = WebhooksAPI(secret: "whsec_...")
+let event = try webhooks.verify(headers: requestHeaders, body: rawBody)
+```
+
+---
+
+## BYOK namespace
+
+```swift
+public enum BYOK {
+    public static func primaryEnvVar(for slug: String) -> String?
+    public static func allEnvVars(for slug: String) -> [String]
+    public static func isOAuthSlug(_ slug: String) -> Bool
+    public static func knownSlugs() -> Set<String>
+}
+```
+
+Reads the bundled `Resources/byok.json`. No network.
+
+---
+
+## Types
+
+### Connection
+
+```swift
+public struct Connection: Codable, Equatable, Sendable {
+    public let id: String?
+    public let externalID: String?
+    public let slug: String
+    public let displayName: String
+    public let category: String
+    public let profile: String
+    public let status: String
+    public let metadata: [String: AnyCodable]?
+    public let credential: [String: AnyCodable]?
+    public let setupURL: String?
+    public let errorMessage: String?
+    public let connectedAt: String?
+    public let logoURL: String?
+    public let brandColor: String?
+    public let docsURL: String?
+    public let envBootstrap: EnvBootstrap?
+}
+```
+
+Decoded from snake_case JSON via `CodingKeys`.
+
+### Balance
+
+```swift
+public struct Balance: Codable, Sendable {
+    public let creditsRemainingMicros: Int
+    public let currency: String
+    public let topUpURL: String
+}
+```
+
+### SpendCaps
+
+```swift
+public struct SpendCaps: Codable, Sendable {
+    public let dailyMicros: Int?
+    public let monthlyMicros: Int?
+    public let usedTodayMicros: Int
+    public let usedMonthMicros: Int
+}
+```
+
+### EventStreamMessage
+
+```swift
+public struct EventStreamMessage: Sendable {
+    public let type: String
+    public let data: AnyCodable
+    public let id: String?
+    public let retry: Int?
+}
+```
+
+### WebhookEvent
+
+```swift
+public struct WebhookEvent: Codable, Sendable {
+    public let id: String
+    public let type: String
+    public let occurredAt: String
+    public let data: AnyCodable
+}
+```
+
+### Integration
+
+```swift
+public struct Integration: Codable, Equatable, Sendable {
+    public let slug: String
+    public let name: String
+    public let description: String
+    public let category: String
+    public let logoURL: String?
+    public let brandColor: String?
+    public let docsURL: String?
+    public let supportedProfiles: [String]
+    public let defaultProfile: String
+    public let enabled: Bool
+    public let featured: Bool
+}
+```
+
+### AnyCodable
+
+Type-erased JSON wrapper used by `EventStreamMessage.data`,
+`WebhookEvent.data`, `Connection.metadata`, and `billing.usage`. Decodes
+`null`, `Bool`, `Int`, `Double`, `String`, `[Any]`, `[String: Any]`. Integer
+JSON values decode as `Int`; fractional values as `Double`.
+
+---
+
+## VendoError
+
+```swift
+public enum VendoError: Error, Sendable {
+    case auth(message: String, code: String)
+    case notConnected(slug: String?, message: String)
+    case needsReauth(slug: String?, message: String, connectURL: String?)
+    case balanceExhausted(message: String)
+    case spendCapExceeded(message: String, retryAfter: Int?)
+    case rateLimited(retryAfter: Int?)
+    case upstream(status: Int, message: String)
+    case validation(message: String)
+    case idempotencyConflict(message: String)
+    case vendoOnlyFeature(featureName: String)
+    case identityNotPresent(message: String)
+    case other(code: String, message: String, status: Int?)
+}
+```
+
+Use `VendoError.from(status:headers:body:)` to convert a raw HTTP response
+into the matching case. The mapping uses the `Vendo-Error-Code` header (or
+the body's `error.code`):
+
+| Code | Case |
+|---|---|
+| `app_unknown`, `app_revoked`, `app_expired` | `.auth(message:, code:)` |
+| `binding_missing`, `connection_revoked` | `.notConnected(slug:, message:)` |
+| `connection_needs_reauth` | `.needsReauth(slug:, message:, connectURL:)` |
+| `balance_exhausted` | `.balanceExhausted(message:)` |
+| `spend_cap_daily`, `spend_cap_monthly` | `.spendCapExceeded(message:, retryAfter:)` |
+| `upstream_rate_limited` | `.rateLimited(retryAfter:)` |
+| `upstream_error` | `.upstream(status:, message:)` |
+| `validation_failed` | `.validation(message:)` |
+| `idempotency_conflict` | `.idempotencyConflict(message:)` |
+| `vendo_only_feature` | `.vendoOnlyFeature(featureName:)` |
+| `identity_not_present` | `.identityNotPresent(message:)` |
+| any other | `.other(code:, message:, status:)` |

@@ -1,13 +1,13 @@
 ---
 title: Deploy
-description: Trigger a deployment from the dashboard or CLI-driven wizard.
+description: Trigger a deployment of a catalog tool into the calling tenant.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
 ## `POST /api/deploy`
 
-Triggers a deployment of a catalog tool into the calling user's tenant. This is what the deploy wizard calls when the user clicks "Launch". It is **session-authenticated only** — deployed tools and external SDKs cannot deploy on a tenant's behalf.
+Provisions a deployment of a catalog tool into the calling user's tenant. This is what the deploy wizard calls when the user clicks "Launch". It is **session-authenticated only** — deployed tools and external SDKs cannot deploy on a tenant's behalf.
 
 ### Auth
 
@@ -17,32 +17,41 @@ Session cookie (`vendo.run` dashboard). No Bearer token form.
 
 Before provisioning, the endpoint enforces:
 
-- The session belongs to an authenticated user.
-- The user owns the target tenant (`tenants.owner_id`).
-- The user has chosen a tenant slug (`slug_chosen`).
+- The session belongs to an authenticated user (`401` otherwise).
+- The user owns the target tenant (`tenants.owner_id`) — `403` otherwise.
+- The user has already chosen a workspace slug (`slug_chosen`).
 - The billing gate is satisfied (skipped for test tenants and Vendo admins).
-- The tool is enabled in the catalog and has an active release.
-- The desired deployment slug is unique within the tenant.
-- The supplied bindings are valid for the tool's required integrations.
+- The tool is enabled in the catalog and has an active release (`enabled = false` rejects with `403 { "error": "tool_unreleased" }` for non-admin callers).
+- The desired `deploymentSlug` is unique within the tenant and the rendered `{tenant_slug}-{deployment_slug}.vendo.run` subdomain doesn't collide with another live deployment.
+- Every provider in `bindings[]` matches an enabled row in the `integrations` catalog.
+- Every required integration in the tool's release manifest has a caller-supplied connection or a `vendo_managed_pool` fallback profile.
 
 ### Request body
 
 ```jsonc
 {
-  "toolSlug": "hermes",
-  "tenantSlug": "acme",
-  "deploymentSlug": "support-bot",
-  "deploymentName": "Support Bot",
-  "adminPassword": "…",          // when the tool seeds an admin user
-  "userVariables": { },          // wizard `user_required` / `user_optional` inputs
-  "bindings": { },               // selected connections per provider
-  "selectedBindings": { },
-  "pendingBindings": { },
-  "userInput": { }
+  "toolSlug": "hermes",                    // required, max 100 chars
+  "tenantSlug": "acme",                    // required, max 100 chars
+  "deploymentSlug": "support-bot",         // optional, max 63 chars; defaults to defaultDeploymentSlugForTool(toolSlug)
+  "deploymentName": "Support Bot",         // optional, max 100 chars; blanks collapse to undefined
+  "adminPassword": "…",                    // optional, max 200 chars — only for tools that seed an admin user
+  "userVariables": {                       // optional — wizard inputs declared in the tool's manifest
+    "TIMEZONE": "America/Los_Angeles"      // values: string (max 10000 chars), number, or boolean
+  },
+  "bindings": ["openrouter", "telegram"],  // optional — provider slugs the integration picker opted into
+  "selectedBindings": {                    // optional — provider_slug → connection UUID
+    "openrouter": "00000000-0000-0000-0000-000000000000"
+  },
+  "pendingBindings": {                     // optional — provider_slug → inline-BYOK payload
+    "telegram": { "bot_token": "…" }       // forwarded to the integration's inlineConnect() to validate + persist
+  },
+  "userInput": { }                         // optional — values referenced as ${userInput.<field>} in afterDeploy hooks
 }
 ```
 
-Full schema lives in [`web/src/app/api/deploy/route.ts`](https://github.com/runvendo/vendo/blob/main/web/src/app/api/deploy/route.ts).
+Only `toolSlug` and `tenantSlug` are required. `bindings`, `selectedBindings`, `userVariables` are zod-validated. `pendingBindings` and `userInput` are passed through without schema validation — only the provider's `inlineConnect()` and the hook engine sees them.
+
+`Idempotency-Key` HTTP header is honored: repeat calls with the same key replay the cached response. The idempotency scope is keyed on `{tenant_id}:/api/deploy` plus the request body.
 
 ### Response: `201 Created`
 
@@ -50,63 +59,112 @@ Full schema lives in [`web/src/app/api/deploy/route.ts`](https://github.com/runv
 { "deploymentId": "dpl_…" }
 ```
 
-Use the returned id with `/api/deployments/{id}/…` endpoints to watch logs, restart, suspend, etc.
+Use the returned id with `/api/deployments/{id}/…` endpoints to poll status, restart, suspend, or destroy.
 
 ### Errors
 
-| Status | `code` | Cause |
-|---|---|---|
-| `400` | `invalid_body`, `invalid_slug`, `invalid_bindings`, … | Validation failure |
-| `401` | `unauthorized` | No session |
-| `402` | `billing_gate` | Tenant needs to fund credits before deploying |
-| `403` | `tool_disabled`, `not_owner`, … | Authenticated but not permitted |
-| `409` | `slug_conflict` | Deployment slug taken inside this tenant |
+Bodies are **flat** — no `error` wrapper. Each row below is `{ "message": "…", "code": "…", … }` at the listed HTTP status.
 
-Body shape on error:
+| Status | `code` | When |
+|---|---|---|
+| `400` | (none — Zod field errors) | Request body fails `DeployBodySchema.safeParse`; body has `{ message: "Invalid request body", errors: { fieldName: [...] } }` |
+| `400` | `INVALID_SLUG` | `deploymentSlug` fails `validateDeploymentSlug` |
+| `400` | `SUBDOMAIN_TOO_LONG` | `{tenant_slug}-{deployment_slug}` exceeds the 63-char DNS-label limit |
+| `400` | `SUBDOMAIN_RESERVED` | Rendered subdomain hits the reserved-host blocklist |
+| `400` | `SLUG_REQUIRED` | Tenant has never chosen a workspace slug (`slug_chosen = false`) |
+| `400` | `UNKNOWN_BINDING` | Any slug in `bindings[]` is not an enabled `integrations` row; body includes `unknown: string[]` |
+| `400` | `MISSING_BINDING` | A required provider has no caller-supplied credential AND its supported profiles exclude `vendo_managed_pool`; body includes `missing: string[]` |
+| `400` | `no_inline_connect` (string `error`) | `pendingBindings` named a provider whose integration has no `inlineConnect()` implementation |
+| `400` | `{provider}_connect_failed` (string `error`) | The integration's `inlineConnect()` threw |
+| `401` | (no code) | No session — body is `{ "message": "Unauthorized" }` |
+| `402` | `BILLING_NOT_SETUP` | Tenant has no Stripe customer row |
+| `402` | `INSUFFICIENT_CREDITS` | Wallet balance ≤ 0; body includes `balance_usd: number` |
+| `403` | (no code) | Tenant owner mismatch — body is `{ "message": "Tenant not found or not authorized" }` |
+| `403` | `tool_unreleased` (string `error`) | Tool's `enabled = false` and caller is not an admin |
+| `404` | (no code) | `toolSlug` doesn't exist in `apps_catalog` |
+| `409` | `SLUG_TAKEN` | Another live deployment in this tenant uses the same `deploymentSlug` |
+| `409` | `SUBDOMAIN_TAKEN` | The rendered subdomain collides with a live deployment in any tenant |
+| `429` | (no code) | Per-IP `deployLimiter` exceeded; body is `{ "message": "Rate limit exceeded" }` |
+| `500` | (no code) | Vendo bug; body is `{ "message": "Internal server error", "detail": "..." }` |
+| `502` | `WORKER_UNREACHABLE` | Couldn't reach the Cloudflare Workflows deploy worker; body includes `detail: string` |
+| `502` | (no code) | Deploy worker returned non-2xx; body is `{ "message": "Deploy worker failed to start deployment", "detail": "<status> <body>" }` |
+
+Example error body:
 
 ```json
-{ "error": { "code": "slug_conflict", "message": "Deployment slug already in use" } }
+{
+  "message": "A deployment already exists at acme-support-bot.vendo.run. Pick a different slug.",
+  "code": "SLUG_TAKEN"
+}
 ```
 
 ### Rate limit
 
-Subject to the `deployLimiter`. Bursts beyond the limit return `429`.
+`deployLimiter`: 5 requests per hour per IP. Bursts beyond return `429` with body `{ "message": "Rate limit exceeded" }`.
 
 <Callout type="warn">
-  This endpoint provisions real infrastructure (Railway service, domain, Postgres, …) and may run for tens of seconds. Treat it as a non-idempotent mutation — if the response is `5xx` or times out, fetch the user's deployment list before retrying to avoid double-creating.
+  This endpoint provisions real infrastructure (Railway service, domain, Postgres, …) and may run for tens of seconds. The handler itself is wrapped in `withIdempotency`: repeated POSTs with the same `Idempotency-Key` HTTP header return the cached response. Without an idempotency key, retry only after fetching the user's deployment list — a transient `5xx` may have left a successful deployment row behind.
 </Callout>
 
 ## `POST /api/connections/bind-deployment`
 
-Idempotent. Called by the connect portal when `?deployment_id=<id>` is in the URL. Writes `app_connection_bindings` so a deployment uses the freshly-created connection.
+Called by the connect-portal pages after a connection lands when the originating URL carried `?deployment_id=<id>`. Writes the `app_connection_bindings` row that links a new connection to the deployment that asked for it. Idempotent on `(app_id, provider_slug)`.
 
 ### Auth
 
-Session cookie.
+Session cookie. The caller's tenant must own both the deployment and the connection.
 
 ### Request body
 
 ```json
 {
   "deploymentId": "dpl_…",
-  "providerSlug": "openai",
-  "connectionId": "cn_…"
+  "providerSlug": "openrouter",
+  "connectionId": "00000000-0000-0000-0000-000000000000"
 }
 ```
 
+All three fields are required strings.
+
 ### Response
+
+Success:
 
 ```json
 { "ok": true }
 ```
 
-or
+Telegram bindings that have a webhook setup failure return `200` with a soft warning:
 
 ```json
-{ "ok": false, "reason": "tenant_mismatch" }
+{ "ok": true, "webhook_warning": "..." }
 ```
 
-Upserts on `(app_id, provider_slug)`. The `enforce_binding_tenant_match` database trigger guards against cross-tenant bindings.
+Conflict on an "exclusive" provider (e.g. Telegram bot tokens) — `409`:
+
+```json
+{
+  "ok": false,
+  "reason": "connection_in_use",
+  "bound_to": { "deployment_slug": "other", "deployment_name": "Other" }
+}
+```
+
+### Errors
+
+Error bodies use the `{ ok: false, reason: "..." }` shape:
+
+| Status | `reason` | When |
+|---|---|---|
+| `400` | `bad_request` | Missing or non-string `deploymentId` / `providerSlug` / `connectionId` |
+| `400` | `provider_mismatch` | Resolved connection's `provider_slug` doesn't match the body's `providerSlug` |
+| `401` | `unauthorized` | No session |
+| `404` | `no_tenant` | Signed-in user has no production tenant |
+| `404` | `connection_not_found` | Connection id doesn't exist or isn't owned by this tenant |
+| `404` | `deployment_not_found` | (from `bindConnectionToDeployment` helper) |
+| `400` | `deployment_has_no_app` | Deployment row has no `authorization_id` |
+| `409` | `connection_in_use` | Exclusive connection already bound to another live deployment; body includes `bound_to: { deployment_slug, deployment_name }` |
+| `400` | (raw DB error message) | Underlying postgres insert error from the helper |
 
 ## Owner-only deployment management
 
@@ -121,8 +179,11 @@ The rest of the per-deployment surface lives under `/api/deployments/{id}/…` a
 | `POST /api/deployments/{id}/destroy` | Tear down (irreversible) |
 | `GET /api/deployments/{id}/usage` | Hourly cost rollup |
 | `POST /api/deployments/{id}/rename` | Change deployment slug |
+| `POST /api/deployments/{id}/rollback` | Roll back to a previous template version |
+| `POST /api/deployments/{id}/retry` | Retry a failed deploy |
 
 ### Related
 
+- [Apps](apps) — manage `keys` and `bindings` on a deployed app
+- [Connections](connections) — runtime read of bound integrations
 - [Build a tool > Deploy and publish](/docs/deploy-and-publish)
-- [SDK > deployment](/docs/reference/sdk)

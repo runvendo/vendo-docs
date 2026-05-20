@@ -30,13 +30,13 @@ That's it. One file. Push to a branch, open a PR against `main` of `runvendo/ven
 
 ## What the action checks automatically
 
-The `publish-to-r2.yml` action validates the manifest against the schema on every push. The PR cannot merge if validation fails. The schema covers:
+The `sync.yml` action runs a `validate` job on every push and PR (`npm run validate`), then a `sync` job that pushes to R2 and Supabase on push-to-main only. The PR cannot merge if validation fails. Validation uses the local Zod schema at `vendo-templates/src/schema.ts`, which is stricter than the deploy worker's runtime schema. It covers:
 
-- Required fields (`slug`, `name`, `version`, `services`, `readiness`, `integrations`).
-- One service must have `role: "web"`.
-- Service-level shape: `image` OR `buildArtifact` (not both), `port`, `startCommand`.
-- Env-var placeholder syntax (`${...}`) is well-formed.
-- `userInputs[]` and `wizardLayout` references resolve.
+- Required top-level fields (`slug`, `name`, `version`, `source`, plus `services`, `readiness`, and `integrations` enforced by the deploy worker on top).
+- `slug` is kebab-case; `version` is semver.
+- Service-level shape: `image` OR `buildArtifact`, `role` is one of `web | worker | cron | init`.
+- `integrations[]` entries declare `provider`, `profile`, and `cardinality` (Zod requires these — the deploy worker's JSON schema doesn't).
+- `wizardLayout` (if present) matches the `subSteps[]` shape.
 
 Schema-valid does **not** mean correct. The reviewer still checks the actual content.
 
@@ -47,7 +47,7 @@ Schema-valid does **not** mean correct. The reviewer still checks the actual con
 - **Integrations exist.** Every `integrations[].provider` slug matches a row in `packages/integrations/<slug>/integration.ts` in the monorepo. New providers need their own PR first.
 - **`integrations[]` is not silently empty.** If your tool calls third-party APIs, the array must list them. See the COALESCE trap in [Versioning & releases](/docs/deploy-and-publish/publish-to-catalog/versioning-and-releases).
 - **Wizard sanity.** A `["*"]` input sweep exists if `wizardLayout` is defined, so forgotten keys still surface.
-- **Healthcheck is real.** `readiness.endpoint` actually responds 2xx on a fresh container.
+- **Healthcheck is real.** `readiness.healthPath` actually responds 2xx on a fresh container.
 - **Data preservation.** Any state that must survive suspend/resume lives in Postgres, R2, KV, or a Railway volume — never in-container filesystem outside a volume.
 - **Pricing model matches behavior.** `pricing: "free"` only on tools that never call the proxy.
 
@@ -55,10 +55,9 @@ Schema-valid does **not** mean correct. The reviewer still checks the actual con
 
 A reviewer will ask for these alongside the templates PR:
 
-1. **DB seed migration** — INSERT into `apps_catalog` with `slug`, `tool_type`, `auth_mode`, `category`, `marketing` JSONB, and routing flags (`surface_all_connections`, `supported_connections`). Pattern: existing tool migrations under `supabase/migrations/`.
-2. **Auth-mode migration** — only if the tool's `auth_mode` disagrees with the default `password`.
-3. **Release migration** — INSERT a `tool_releases` row pointing at `{slug}/{version}` with `status='active'`. If the tool already has an active release, the migration marks the old row `inactive` first.
-4. **Proxy adapter** — if the tool calls a new provider that doesn't yet have an adapter in `proxy/src/adapters/`.
+1. **DB seed migration** — INSERT into `apps_catalog`. Required columns: `id` (UUID, use `gen_random_uuid()`), `slug`, `name`, `tool_type` (`'deployment'` for tenant-deployable tools), `enabled`, `featured`, `usage_category`, `allowed_callback_patterns`, `marketing` (JSONB). Optional: `auth_mode` (nullable — only set if your tool's `adminBootstrap.authMode` needs it), `description`, `surface_all_connections`, `supported_connections`. Pattern: existing tool migrations under `supabase/migrations/`.
+2. **Release migration** — INSERT a `tool_releases` row with `tool_id` set from `(SELECT id FROM apps_catalog WHERE slug = '<slug>')` (UUID FK, not `tool_slug`), `version = '<version>'`, and `status = 'active'`. If the tool already has an active release, the migration UPDATEs the old row to `inactive` first (the partial unique index on `tool_releases (tool_id) WHERE status='active'` enforces this anyway).
+3. **Proxy adapter** — if the tool calls a new provider that doesn't yet have an adapter in `packages/integrations/<slug>/` or `proxy/src/adapters/`.
 
 <Callout type="warn">
 Migrations don't apply automatically on merge — they need `supabase db push` against the prod project. The reviewer will run this; don't run it yourself unless you're on the Vendo team and have been asked to.
@@ -68,10 +67,11 @@ Migrations don't apply automatically on merge — they need `supabase db push` a
 
 Once both PRs merge and the migration is applied:
 
-1. The publish action uploads `{slug}/{version}.json` to R2.
+1. The sync action uploads `{slug}/{version}.json` to R2.
 2. The release row goes active.
-3. The catalog query starts returning your tool to public surfaces (unless `marketing.internal = true`).
-4. The next tenant who clicks Deploy gets your tool.
+3. The sync action's `sync:supabase` step updates `tool_releases.template_version`, `wizard_inputs`, `requires`, and `wizard_layout` from the manifest.
+4. The catalog query starts returning your tool to public surfaces (unless `marketing.internal = true`).
+5. The next tenant who clicks Deploy gets your tool.
 
 Watch your first real-tenant deploy in `deploy_logs` and verify it advances cleanly from `validate_template` to `notify_user`.
 

@@ -1,0 +1,235 @@
+---
+title: Tools (catalog)
+description: Public catalog surface — list deployable tools, read tool details, fetch pricing framing.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The `/api/tools/*` and `/api/pricing/*` endpoints serve the Vendo catalog. They power the marketing site, the deploy wizard, and any custom deployer UI. Most are public (no auth) and aggressively cached.
+
+## `GET /api/tools/catalog`
+
+Full catalog of tools visible to the caller. Public callers see only `enabled = true` rows; admin callers (Vendo staff) see every row.
+
+### Auth
+
+Optional session cookie — used solely to detect admin mode.
+
+### Response: `200 OK`
+
+```json
+{
+  "tools": [
+    { "slug": "hermes", "name": "Hermes", "description": "…", "category": "agent", "...": "…" }
+  ]
+}
+```
+
+Shape comes from `getPublicToolsCatalog()` / `getAdminToolsCatalog()` in `web/src/lib/tools-catalog-server.ts`. The public branch is cached server-side (1 hour, shared with the marketing hero); admin responses are uncached.
+
+### Errors
+
+On any failure the route returns `200 { tools: [] }` rather than 5xx — graceful degrade for the marketing site.
+
+## `GET /api/tools/deployable`
+
+List of tools that have an active release and are deploy-ready. Used by the deploy wizard's tool picker. Tools marked `marketing.internal: true` and slugs prefixed `vendo-test-` are hidden from non-admin callers.
+
+### Auth
+
+Optional session cookie — admin callers see unreleased tools as well.
+
+### Response: `200 OK`
+
+```json
+{
+  "tools": [
+    {
+      "toolSlug": "hermes",
+      "toolName": "Hermes",
+      "description": "…",
+      "iconUrl": "https://vendo.run/logos/hermes.svg",
+      "authMode": "supabase",
+      "sourceRepo": "https://github.com/runvendo/hermes-vendo",
+      "version": "1.4.2",
+      "wizardInputs": [
+        { "key": "TIMEZONE", "label": "Timezone", "type": "string", "required": false }
+      ],
+      "wizardLayout": {
+        "version": 1,
+        "subSteps": [
+          {
+            "id": "connect",
+            "title": "Connect integrations",
+            "sections": [
+              { "type": "integration", "providers": ["openrouter", "telegram"] }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+`wizardLayout` is validated against `WizardLayoutSchema` before returning; if a tool's cached layout fails to parse, the field is `null` and the deploy wizard falls back to single-page rendering. `wizardInputs` defaults to `[]` when the release has no inputs.
+
+### Errors
+
+On any failure the route returns `200 { tools: [] }`.
+
+## `GET /api/tools/{slug}`
+
+Detail for a single tool by slug. Returns the full `apps_catalog` row plus joined release data.
+
+### Response: `200 OK`
+
+```json
+{ "tool": { "slug": "hermes", "name": "Hermes", "...": "…" } }
+```
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `404` | `{ "error": "Tool not found" }` | Unknown slug |
+| `500` | `{ "error": "Internal error" }` | Vendo bug |
+
+## `GET /api/tools/{slug}/usage-framing`
+
+"How long will $X buy" framing for the pricing UI on the tool detail page. Maps each credit preset to a human-readable label like "≈ 12 days of usage".
+
+### Response: `200 OK`
+
+```json
+{
+  "amounts": [
+    { "usd": 5, "label": "≈ 3 days of usage", "cold_start": false },
+    { "usd": 25, "label": "≈ 17 days of usage", "cold_start": false },
+    { "usd": 100, "label": "≈ 70 days of usage", "cold_start": false }
+  ]
+}
+```
+
+`cold_start` flags an estimate from a tool with no historical spend (uses category fallback). Cached 1 hour.
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `404` | `{ "error": "tool_not_found" }` | Unknown slug |
+
+## `GET /api/tools/{slug}/integrations`
+
+Integrations a tool requires, split into `required` and `optional`. Used by the deploy wizard's integration picker. With `?appId=<id>`, the `alreadyEnabled` flag reflects deployment-level bindings (`app_connection_bindings`); without it, the flag reflects tenant-level state (`tenant_integrations`).
+
+### Query parameters
+
+| Param | Description |
+|---|---|
+| `appId` | Optional. UUID of an existing app — if present, `alreadyEnabled` is computed against the app's bindings. |
+
+### Response: `200 OK`
+
+```json
+{
+  "required": [
+    {
+      "integrationId": "00000000-0000-0000-0000-000000000000",
+      "provider": "openrouter",
+      "name": "OpenRouter",
+      "description": "…",
+      "iconName": null,
+      "logoUrl": "…",
+      "category": "llm",
+      "defaultProfile": "vendo_managed_pool",
+      "supportedProfiles": ["vendo_managed_pool"],
+      "alreadyEnabled": true
+    }
+  ],
+  "optional": [
+    { "provider": "telegram", "...": "…", "alreadyEnabled": false }
+  ]
+}
+```
+
+Tools with `surface_all_connections: true` (e.g. Hermes) surface every enabled integration in the optional bucket; other tools restrict to the providers declared in their release's `requires[]` manifest.
+
+If `slug` doesn't exist the route returns `200 { required: [], optional: [] }` instead of `404` — keeps the wizard UI from crashing on a stale link.
+
+## `GET /api/pricing/models`
+
+Live OpenRouter model catalog with Vendo's margin applied. Used by the LLM pricing page.
+
+### Response: `200 OK`
+
+```json
+{
+  "models": [
+    {
+      "id": "anthropic/claude-3.5-sonnet",
+      "name": "Claude 3.5 Sonnet",
+      "context_length": 200000,
+      "pricing": {
+        "prompt_per_token": 0.0000036,
+        "completion_per_token": 0.000018,
+        "prompt_per_million": 3.6,
+        "completion_per_million": 18.0
+      }
+    }
+  ],
+  "cached": false
+}
+```
+
+`cached: true` indicates the server is serving from its 1-hour in-memory cache. Prices include the configured `MARGIN_PERCENT` (default 20%) so what the marketing page shows equals what the proxy bills.
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `502` | `{ "message": "Failed to fetch models from OpenRouter" }` | Upstream OpenRouter fetch failed |
+| `500` | `{ "message": "Internal server error" }` | Vendo bug |
+
+## `GET /api/pricing/integrations`
+
+Sidebar entries for `/pricing`. Returns a flat list of integrations that have public-flagged meters.
+
+### Response: `200 OK`
+
+```json
+{ "integrations": [ { "slug": "openrouter", "name": "OpenRouter", "category": "llm" } ] }
+```
+
+Cached 5 minutes at the CDN with `stale-while-revalidate=3600`.
+
+### Errors
+
+| Status | Body |
+|---|---|
+| `500` | `{ "message": "Failed to load pricing integrations" }` |
+
+## `GET /api/pricing/public/{slug}`
+
+Detailed rate table for one `/pricing` entry. 404s anything not in the public allowlist (integrations without a `public = true` meter, or unknown infrastructure slugs).
+
+### Response: `200 OK`
+
+Shape comes from `getPublicIntegrationDetail()` in `web/src/lib/pricing/public.ts`. Cached 5 minutes at the CDN.
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `404` | `{ "message": "Not found" }` | Slug not in the public allowlist |
+| `500` | `{ "message": "Failed to load pricing detail" }` | Vendo bug |
+
+<Callout type="info">
+  Every `/api/pricing/*` endpoint is unauthenticated and CDN-cached. Don't put PII or tenant-specific data there.
+</Callout>
+
+### Related
+
+- [Integrations](integrations) — tenant-scoped integration state
+- [Deploy](deploy) — `wizardLayout` and `wizardInputs` shape consumed by the deploy modal
+- [Pricing and revenue](/docs/pricing-and-revenue/credits-model)

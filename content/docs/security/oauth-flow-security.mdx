@@ -20,29 +20,30 @@ In both cases, **the popup runs in `vendo.run`'s origin, not in your deployment'
 
 Authorize URLs only accept callback URLs under `vendo.run`. The OAuth client registrations at each provider list a fixed set of `vendo.run/api/oauth/<provider>/callback` entries; the provider rejects anything else. There is no path by which a tenant or a deployment can register a callback that points at attacker-controlled infrastructure.
 
-For Vendo's own session minting (proxy session JWTs, used when a tenant opens an iframe-embedded preview), the redirect parameter is allow-listed: only `https://*.vendo.run` destinations are accepted. Open-redirect attempts return an error before any token is issued.
+The first-party OAuth `state` is an HMAC-SHA256-signed cookie keyed by `INTEGRATION_ENCRYPTION_KEY`, scoped to the callback path and bound to the provider, with a 10-minute TTL. Mismatched provider, mismatched state nonce, or an expired/missing cookie all abort the callback before any token exchange.
+
+For Vendo's own session minting (proxy session JWTs, used when a tenant opens an iframe-embedded preview), the redirect parameter is allow-listed: the destination must be HTTPS and its hostname must equal `vendo.run` or end with `.vendo.run`. Open-redirect attempts return an error before any token is issued.
 
 ## Token storage and decryption
 
-For first-party OAuth (`oauth_app_install` profile), the access token and refresh token are stored in `connections.encrypted_credential` / `encrypted_refresh_token` columns, AES-256-GCM encrypted at rest. Decryption happens in the credentials worker at the moment a request needs the cleartext — the worker decrypts in memory, returns a short-lived response to the calling SDK, and does not persist the cleartext anywhere.
+For first-party OAuth (`oauth_app_install` profile), the access token is stored in `connections.encrypted_credential`, AES-256-GCM encrypted at rest. The schema also carries an `encrypted_refresh_token` column for providers whose access tokens expire and need rotating; today's only first-party provider is Notion, which issues non-expiring access tokens and no refresh token, so that column is left null. Decryption happens in the credentials worker at the moment a request needs the cleartext — the worker decrypts in memory, returns a short-lived response to the calling SDK, and does not persist the cleartext anywhere.
 
 For Composio-managed providers, Vendo holds no token. The credentials worker calls Composio's REST API with Composio's account id, receives a freshly refreshed access token, and caches it per Cloudflare colo until ~60 seconds before expiry. The refresh token never reaches Vendo.
 
 ## Token rotation and refresh
 
-The credentials worker handles refresh transparently:
+How refresh works depends on the profile:
 
-- It returns a token that's at least 60 seconds away from expiry. If the cached token is within that window, it triggers a refresh against the upstream provider and serves the new one.
-- For Composio-managed connections, Composio holds the refresh token and runs the rotation; Vendo asks for a fresh access token whenever it needs one.
-- For `oauth_app_install` connections, Vendo holds both tokens, calls the provider's refresh endpoint, and re-encrypts the new access (and where applicable, new refresh) token before serving the response.
+- **Composio-managed connections** — Composio holds the refresh token and runs the rotation. The credentials worker fetches a fresh access token from Composio's REST API when needed, caches it per Cloudflare colo, and evicts the cache entry 60 seconds before the upstream `expires_at`. Your tool never sees the refresh token; it never reaches Vendo.
+- **`oauth_app_install` connections** — today this means Notion only, and Notion access tokens don't expire, so there is no live refresh path: the credentials worker decrypts the stored access token and returns it as-is with `expires_at: null`. When a future first-party provider with expiring tokens lands, Vendo will refresh server-side, re-encrypt the new tokens, and serve the new access token through the same call. We'll document the refresh semantics for that provider when it ships.
 
-Your tool calls `vendo.token("notion")` (or hits `credentials.vendo.run/<provider>` with its `vendo_sk_*` bearer) and receives `{ access_token, expires_at }`. You do not implement refresh, and you should not cache the access token longer than `expires_at`.
+Your tool calls `vendo.token("notion")` (or hits `credentials.vendo.run/<provider>` with its `vendo_sk_*` bearer) and receives `{ access_token, expires_at, token_type }`. You do not implement refresh. For refresh-bearing providers (Composio today), don't cache the access token past `expires_at`; for Notion's non-expiring tokens, `expires_at` is `null` and you can use the response until the next call (the credentials worker is the cache).
 
 ## What happens on revocation
 
 A tenant revokes a connection from the dashboard (`DELETE /api/connections/[id]`). In order:
 
-1. **Upstream revocation** is attempted best-effort. For Composio-managed connections, Vendo calls Composio's revoke endpoint. For first-party Notion, Vendo calls Notion's token revocation endpoint. Failure here does not block the rest of the steps — the connection is still removed from Vendo's side.
+1. **Upstream revocation** is attempted best-effort, and only for providers whose upstream supports it from our side. For Composio-managed connections, Vendo calls Composio's `connectedAccounts.delete`. For Telegram (a `byok_static` provider), Vendo clears the bot's webhook so the upstream stops delivering updates. For Notion (`oauth_app_install`), there is no current upstream revocation call — the tenant retains the option of revoking Vendo's integration directly from Notion's UI. Failure of the upstream step does not block the rest — the connection is still removed from Vendo's side.
 2. **Bindings are deleted.** Every `app_connection_bindings` row referencing the connection is dropped. From this moment, any proxy call from a deployment that was using this connection returns `binding_missing` (HTTP 403).
 3. **The connection row is marked `revoked`** and the encrypted credential columns are cleared.
 4. **The proxy KV cache is invalidated.** Cached connection lookups have a 60-second TTL, so any worker that had the old value will refresh within the window. Bindings are not cached on the proxy hot path, so the 403 from step 2 takes effect on the next request.

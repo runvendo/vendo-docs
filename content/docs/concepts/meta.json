@@ -1,9 +1,11 @@
 {
   "title": "Concepts",
   "pages": [
+    "index",
     "what-is-a-tool",
     "two-modes",
     "multi-tenant",
+    "request-scoping",
     "connections-and-integrations",
     "proxy-and-credentials",
     "credits-and-billing",

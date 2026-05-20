@@ -1,0 +1,238 @@
+---
+title: Apps
+description: Manage deployed apps — list, update spend caps, mint keys, change bindings.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The `/api/apps/*` surface manages **apps** — the rows that back each deployment in `tool_authorizations` (formerly `apps`). One app per deployment, one or more `keys` per app, one binding per provider per app. All endpoints are session-authenticated and scoped to the caller's tenant.
+
+## `GET /api/apps`
+
+List every active app in the caller's tenant.
+
+### Auth
+
+Session cookie.
+
+### Response: `200 OK`
+
+```json
+{
+  "apps": [
+    {
+      "id": "00000000-0000-0000-0000-000000000000",
+      "kind": "deployment",
+      "display_name": null,
+      "key_prefix": "vendo_sk_a1b2",
+      "connected_at": "2026-05-01T12:00:00Z",
+      "tool_id": "00000000-0000-0000-0000-000000000001",
+      "tool_slug": "hermes",
+      "tool_name": "Hermes"
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | `string` | UUID of the `tool_authorizations` row. Same as `deployments.authorization_id`. |
+| `kind` | `string` | `"deployment"` or `"project"` |
+| `display_name` | `string \| null` | Optional human label |
+| `key_prefix` | `string \| null` | First 12 chars of the most-recent active app-scoped key (the full key plaintext is never returned by this endpoint) |
+| `connected_at` | `string` | ISO 8601 timestamp |
+| `tool_id`, `tool_slug`, `tool_name` | `string \| null` | Catalog tool that this app backs |
+
+Only active apps (`disconnected_at IS NULL`) are returned, ordered by `connected_at DESC`.
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `401` | `{ "error": "unauthorized" }` | No session |
+| `404` | `{ "error": "no_tenant" }` | Signed-in user has no production tenant |
+
+## `PATCH /api/apps/{id}`
+
+Update an app's spend caps or display name. All fields are optional — send only the keys you want to change.
+
+### Auth
+
+Session cookie. Caller must own the tenant that owns the app.
+
+### Request body
+
+```jsonc
+{
+  "spend_cap_daily": 5.00,              // USD; converted to micros server-side. Set to null to clear.
+  "spend_cap_monthly": 100.00,          // USD; converted to micros. Set to null to clear.
+  "display_name": "Support Bot"          // 1–80 chars after trim
+}
+```
+
+Caps accept numbers or numeric strings in the range `[0, 1_000_000]` USD. Server converts to integer micros.
+
+### Response: `200 OK`
+
+```json
+{
+  "app": {
+    "id": "00000000-0000-0000-0000-000000000000",
+    "display_name": "Support Bot",
+    "spend_cap_micros_daily": "5000000",
+    "spend_cap_micros_monthly": "100000000"
+  }
+}
+```
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `400` | `{ "error": "invalid_body" }` | Body not JSON or empty |
+| `400` | `{ "error": "invalid_spend_cap_daily" }` | Non-numeric, negative, or > 1,000,000 USD |
+| `400` | `{ "error": "invalid_spend_cap_monthly" }` | Same |
+| `400` | `{ "error": "invalid_display_name" }` | Empty, not a string, or > 80 chars after trim |
+| `400` | `{ "error": "no_fields" }` | No recognized fields in body |
+| `401` | `{ "error": "unauthorized" }` | No session |
+| `404` | `{ "error": "no_tenant" }` or `{ "error": "not_found" }` | No tenant / app not in this tenant |
+| `500` | `{ "error": "<db error>" }` | DB update failed |
+
+## `POST /api/apps/{id}/keys`
+
+Mint an additional App Key on an existing app. The plaintext is returned exactly once; persist it client-side.
+
+### Auth
+
+Session cookie. Caller must own the tenant that owns the app.
+
+### Response: `200 OK`
+
+```json
+{
+  "key": "vendo_sk_…",                       // plaintext, returned exactly once
+  "keyId": "00000000-0000-0000-0000-000000000000",
+  "prefix": "vendo_sk_a1b2"
+}
+```
+
+The new key is bound to the same app (`scope: { mode: "app", appId }`) as the original deploy-time key. Adding a key doesn't change which deployment the app backs, and the proxy resolves attribution on-demand.
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `401` | `{ "error": "unauthorized" }` | No session |
+| `404` | `{ "error": "no_tenant" }` or `{ "error": "not_found" }` | No tenant / app not in this tenant |
+
+## `GET /api/apps/{id}/bindings`
+
+List the connection bindings for an app (`app_connection_bindings`). One row per `(app_id, provider_slug)`.
+
+### Auth
+
+Session cookie. Caller must own the tenant that owns the app.
+
+### Response: `200 OK`
+
+```json
+{
+  "bindings": [
+    {
+      "provider_slug": "openrouter",
+      "connection": {
+        "id": "00000000-0000-0000-0000-000000000000",
+        "profile": "vendo_managed_pool",
+        "status": "active",
+        "display_name": "OpenRouter (Vendo managed)",
+        "metadata": { }
+      },
+      "cardKind": null
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `provider_slug` | `string` | The integration slug |
+| `connection` | `object` | The bound connection row (id, profile, status, display name, metadata) |
+| `cardKind` | `string \| null` | Server-resolved post-deploy card kind from the integration registry; the dashboard uses this to dispatch the right UI component. `null` when the integration has no post-deploy card. |
+
+If the caller doesn't own the app, the response is `200 { bindings: [] }` (silently empty) — not an error.
+
+## `POST /api/apps/{id}/bindings`
+
+Create a binding from an app to a connection. Two modes:
+
+1. **Managed-pool fast path** — body `{ "provider_slug": "openrouter" }`. Lazy-creates (or re-uses) a `vendo_managed_pool` `connections` row for the tenant. Only valid for providers whose `default_profile = "vendo_managed_pool"`.
+2. **Explicit binding** — body `{ "provider_slug": "telegram", "connection_id": "00000000-…" }`. Binds an existing connection the tenant already owns.
+
+Idempotent on `(app_id, provider_slug)`: if a binding already exists, returns `{ ok: true, already_connected: true }`.
+
+### Auth
+
+Session cookie. Caller must own the tenant that owns both the app and the connection.
+
+### Response: `200 OK`
+
+```jsonc
+{
+  "ok": true,
+  "connection_id": "00000000-0000-0000-0000-000000000000",
+  "already_connected": false,            // true if the binding pre-existed
+  "restartRequired": true                  // present when a new binding was written; tells the dashboard to prompt a restart
+}
+```
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `400` | `{ "error": "invalid_body" }` | Missing or non-string `provider_slug` |
+| `400` | `{ "error": "provider_mismatch" }` | Body's `connection_id` resolved a row whose `provider_slug` doesn't match the body |
+| `400` | `{ "error": "connection_inactive" }` | Target connection isn't `active` |
+| `400` | `{ "error": "use_dedicated_connect_flow" }` | Managed-pool path called for a BYOK/OAuth provider |
+| `401` | `{ "error": "unauthorized" }` | No session |
+| `404` | `{ "error": "not_found" }` | App not in this tenant or missing |
+| `404` | `{ "error": "unknown_provider" }` | `provider_slug` is not an enabled `integrations` row |
+| `404` | `{ "error": "connection_not_found" }` | Explicit `connection_id` doesn't exist or isn't owned by this tenant |
+| `409` | `{ "error": "connection_in_use", "bound_to": { "deployment_slug", "deployment_name" } }` | Exclusive connection already bound to another live deployment |
+| `500` | `{ "error": "<db error>" }` | DB insert/update failed |
+
+## `PUT /api/apps/{id}/bindings`
+
+Swap which connection an app uses for a given provider. Same validation, same error shapes — but always operates on an existing binding (won't create a missing one).
+
+### Request body
+
+```json
+{
+  "provider_slug": "openrouter",
+  "connection_id": "00000000-0000-0000-0000-000000000000"
+}
+```
+
+Both fields required.
+
+### Response: `200 OK`
+
+```json
+{ "ok": true, "restartRequired": true }
+```
+
+The deploy's `deployment_env_vars` rows (kind=`integration`) are upserted with the new connection's credentials so the proxy resolves the new connection on the next call.
+
+### Errors
+
+Same as `POST` — `invalid_body`, `provider_mismatch`, `connection_inactive`, `connection_not_found`, `not_found`, `connection_in_use` (409), and 500.
+
+<Callout type="info">
+  After changing a binding, the deployed app needs to be restarted to pick up the new env vars. The dashboard surfaces this via the `restartRequired: true` flag and a "Restart now" affordance.
+</Callout>
+
+### Related
+
+- [Connections (runtime)](connections) — what the deployed app sees after a binding lands
+- [Keys](keys) — mint and revoke `vendo_sk_*` keys
+- [Concepts > Connections](/docs/concepts/connections-and-integrations)

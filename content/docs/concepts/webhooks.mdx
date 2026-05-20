@@ -129,19 +129,19 @@ VENDO_WEBHOOK_SECRET=whsec_...
 
 After a successful `verify()` call you receive a `WebhookEvent` with:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | `string` | Unique event ID (use for deduplication) |
-| `type` | `string` | Event type, e.g. `connection.connected` |
-| `timestamp` | `string` | ISO 8601 timestamp |
-| `data` | `object` | Event-specific payload |
+| Field | Python | TypeScript | Description |
+|-------|--------|------------|-------------|
+| `id` | `id: str` | `id: string` | Unique event ID (use for deduplication) |
+| `type` | `type: str` | `type: string` | Event type, e.g. `connection.connected` |
+| `occurred_at` / `occurredAt` | `occurred_at: str` | `occurredAt: string` | ISO 8601 timestamp the event was emitted |
+| `data` | `data: dict` | `data: Record<string, unknown>` | Event-specific payload |
 
 ## Replay protection
 
-`verify()` checks that the event timestamp is within `max_age_seconds` of the current time (default: 5 minutes). Events older than this window are rejected with `ValidationError`, making replay attacks impractical.
+`verify()` checks that the `Vendo-Timestamp` header is within `max_age_seconds` of the current time (default: 5 minutes / 300s). Events older than this window are rejected with `ValidationError`, making replay attacks impractical. The timestamp is accepted either as unix epoch seconds or RFC-3339, so signature failures on non-numeric `Vendo-Timestamp` values usually mean a malformed string rather than an algorithm mismatch.
 
-For idempotent processing, store and check the `event.id` in your database before processing.
+For idempotent processing, store and check the `event.id` in your database before processing. Webhook delivery is at-least-once; a unique constraint on the stored `id` is the recommended dedup pattern.
 
 ## Signature algorithm
 
-Vendo signs webhooks with HMAC-SHA256 over the raw body and sends the signature in the `Vendo-Signature` header alongside a `Vendo-Timestamp` header. The SDK verifies both.
+Vendo signs webhooks with HMAC-SHA256 over `"{Vendo-Timestamp}.{body}"` (Stripe-style) and sends the digest in the `Vendo-Signature` header. The SDK verifies both the digest and the timestamp window.

@@ -16,6 +16,7 @@ This page covers the full shape. The authoritative schema is [`manifest.schema.j
   "slug": "my-tool",
   "name": "My Tool",
   "version": "1.0.0",
+  "source": "upstream",
   "services": [
     {
       "name": "web",
@@ -25,30 +26,32 @@ This page covers the full shape. The authoritative schema is [`manifest.schema.j
       "startCommand": "node server.js"
     }
   ],
-  "readiness": { "endpoint": "/healthz" },
+  "readiness": { "healthPath": "/healthz" },
   "integrations": []
 }
 ```
 
-Required: `slug`, `name`, `version`, `services` (one with `role: "web"`), `readiness`, `integrations` (use `[]` if your tool has none).
+Required: `slug`, `name`, `version`, `services` (one with `role: "web"`), `readiness` (with `healthPath`), `integrations` (use `[]` if your tool has none). The schema also requires `source` (`"upstream" | "fork"` for image-based templates, or a build-block object for source-based templates — see `computeProvider` below).
 
 ## `services`
 
-Each service runs as its own Railway container (or Cloudflare Worker for static frontends).
+Each service runs as its own Railway container (or as a Cloudflare Worker / Pages build, depending on `computeProvider`).
 
 ```jsonc
 {
   "name": "my-app",
-  "role": "web",            // "web" | "worker" | "cron" | "init"
+  "role": "web",            // REQUIRED. "web" | "worker" | "cron" | "init"
   "image": "ghcr.io/org/image:tag",
   "port": 3000,
   "startCommand": "yarn start",
+  "healthPath": "/healthz",        // optional, per-service readiness path
+  "healthcheckTimeout": 240,       // optional, seconds
   "env": { "DATABASE_URL": "${database_url}" },
   "volumes": [{ "mountPath": "/data", "sizeGB": 1 }]
 }
 ```
 
-For `cloudflare-workers` compute, replace `image` with `buildArtifact` (R2 path to a pre-built bundle).
+`role` is required and gates downstream behavior: `web` is the public service the app-proxy routes to; `worker` is a background process; `cron` is scheduled; `init` runs to completion before the rest (use with `serviceStartOrder` — see below). For `cloudflare-workers` compute, replace `image` with `buildArtifact` (R2 path to a pre-built bundle).
 
 ## `databases`
 
@@ -71,15 +74,18 @@ Reference as `${app_secret}` in `services[].env`.
 
 ## Env-var placeholders
 
-Use these in `services[].env`; the deploy worker resolves them at `resolve_env`:
+Use these in `services[].env`; the deploy worker resolves them at `resolve_env`. Full list lives in [`cloudflare/deploy-worker/src/secrets.ts`](https://github.com/runvendo/vendo/blob/main/cloudflare/deploy-worker/src/secrets.ts).
 
 | Placeholder | Value |
 |---|---|
 | `${domain}` / `${subdomain}` | FQDN / subdomain part |
 | `${database_url}` / `${database_url_unpooled}` / `${database_host,port,user,password,name}` | Postgres |
 | `${redis_url}` | Redis |
-| `${r2_bucket,endpoint,access_key,secret_key}` | R2 |
+| `${r2_bucket}` / `${r2_endpoint}` / `${r2_access_key}` / `${r2_secret_key}` | R2 storage. `${r2_endpoint}` resolves to `https://{cf_account_id}.r2.cloudflarestorage.com`. |
 | `${vendo_api_key}` | The deployment's metered proxy key |
+| `${vendo_tenant_id}` / `${vendo_deployment_id}` / `${vendo_deployment_slug}` | Deployment context — useful for tools that report identity back to Vendo. |
+| `${vendo_proxy_url}` | Default proxy base URL (`https://openrouter-proxy.vendo.run/v1`). |
+| `${openai_proxy_url}` / `${anthropic_proxy_url}` | Provider-specific proxy URLs (`https://openai-proxy.vendo.run/v1`, `https://anthropic-proxy.vendo.run`). |
 | `${admin_email}` / `${admin_password}` | Admin from the wizard |
 
 ## `integrations`
@@ -123,10 +129,19 @@ System-managed values (DB URLs, generated secrets, deploy-context built-ins, con
 ## `readiness`
 
 ```jsonc
-"readiness": { "endpoint": "/healthz", "timeoutSeconds": 300 }
+"readiness": {
+  "healthPath": "/healthz",
+  "maxRetries": 30,
+  "retryIntervalSec": 10,
+  "expectedBootTimeSec": 180
+}
 ```
 
-The deploy worker polls this endpoint after compute is up. A non-2xx response fails the `health_check_done` phase and marks the deployment `failed`. See [Healthchecks](/docs/infrastructure) for the contract details.
+Only `healthPath` is required. `maxRetries` × `retryIntervalSec` gives the effective timeout; `expectedBootTimeSec` is an optional hint the deploy worker uses to skip the first attempts on slow-booting tools. The deploy worker polls the path after compute is up; a non-2xx response fails the `health_check_done` phase and marks the deployment `failed`. See [Healthchecks](/docs/infrastructure) for the contract details.
+
+<Callout type="warn">
+The field is `healthPath`, not `endpoint`. The field for the timing budget is `retryIntervalSec`, not `timeoutSeconds`. Older docs used the wrong names — the schema silently ignores unknown keys, so a misnamed field just falls back to defaults without complaining.
+</Callout>
 
 ## `adminBootstrap`
 
@@ -140,7 +155,28 @@ If your tool needs an initial admin user seeded:
 }
 ```
 
-`apps_catalog.auth_mode` must agree with `adminBootstrap.authMode` — disagreement causes wizard rendering bugs.
+Set `adminBootstrap.authMode` to match how your tool actually handles admin auth. There's no enforced relationship with `apps_catalog.auth_mode` (that column is nullable and editorial); pick the right `authMode` here based on what your `seedEndpoint` expects, and the wizard will render the matching credential inputs.
+
+## `appCredentialSeed`
+
+For tools whose own database stores provider credentials (Open Notebook is the canonical example), the deploy worker can POST a credential bundle into your tool after admin bootstrap:
+
+```jsonc
+"appCredentialSeed": {
+  "endpoint": "/api/seed/providers",
+  "items": [
+    {
+      "provider": "openrouter",
+      "name": "Vendo OpenRouter",
+      "modalities": ["chat"],
+      "apiKeyVar": "OPENROUTER_API_KEY",
+      "baseUrlVar": "OPENROUTER_BASE_URL"
+    }
+  ]
+}
+```
+
+Each item references env-var names you already declared in `services[].env`. The seed POSTs the resolved values to your `endpoint` so the tool can write them into its own credential storage.
 
 ## `deployHooks`
 
@@ -149,11 +185,56 @@ For webhook routing — e.g. registering a Telegram bot's webhook URL after depl
 ```jsonc
 "deployHooks": {
   "afterDeploy": [
-    { "kind": "telegram_set_webhook", "path": "/telegram/webhook" }
+    {
+      "kind": "telegram_set_webhook",
+      "args": { "path": "/telegram" }
+    }
   ]
 }
 ```
 
-The hook stamps `https://hooks.vendo.run/<connection_external_id>` into the upstream provider.
+The hook stamps `https://hooks.vendo.run/<connection_external_id>` into the upstream provider. Note that `path` lives inside `args` — older docs flattened it to the top level, which the schema silently ignores.
+
+## `previousVersions`
+
+A flat list of every prior version of this tool. The dashboard reads this to decide whether a deployment is on the "current" version, and the `POST /api/deployments/[id]/rollback` route uses it together with `deployments.previousTemplateVersion` to determine the rollback target.
+
+```jsonc
+"previousVersions": ["1.0.0", "1.1.0", "1.1.1"]
+```
+
+Include every version you've ever shipped, in order. Forgetting older entries breaks rollback for deployments that pinned to them.
+
+## `computeProvider`
+
+Optional. Defaults to `railway`.
+
+```jsonc
+"computeProvider": "railway"            // "railway" | "cloudflare-workers" | "cloudflare-pages"
+```
+
+- `railway` — the default. Services run as Railway containers; `services[].image` references the container image.
+- `cloudflare-workers` — Worker bundle uploaded from R2 via `services[].buildArtifact`.
+- `cloudflare-pages` — Cloud-built from source. `source` becomes an object with `repo`, `ref`, `installCommand`, `buildCommand`, `outputDir`, `nodeVersion`. Used by Excalidraw and Penpot.
+
+## `vendoAuth`
+
+Top-level boolean. When `true` (the default), the app proxy requires a valid Vendo session cookie before forwarding requests to the deployment, and injects `X-Vendo-*` identity headers on each request. Set to `false` for tools that authenticate independently (e.g. tools with their own login).
+
+```jsonc
+"vendoAuth": true
+```
+
+The tenant can override per deployment via `PATCH /api/deployments/[id]/auth` — the manifest value is the default for new deploys.
+
+## `serviceStartOrder`
+
+Required when one service must finish before others start (e.g. an `init`-role service that runs DB migrations).
+
+```jsonc
+"serviceStartOrder": ["migrate", "web", "worker"]
+```
+
+The compute provider redeploys services in this order and waits for each (except the last) to reach SUCCESS before triggering the next.
 
 Next: [Wizard layout](/docs/deploy-and-publish/publish-to-catalog/wizard-layout).

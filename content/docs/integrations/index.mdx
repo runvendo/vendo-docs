@@ -11,7 +11,7 @@ For the platform-wide picture — how connections, bindings, and the proxy inter
 
 ## Available providers
 
-The list below is auto-generated from the `integrations` table (enabled rows only). Every link points to a generated per-provider page; the prose on each page is hand-written.
+The list below is auto-generated from the monorepo's `packages/integrations/<slug>/catalog.json` files (enabled entries only). Every link points to a generated per-provider page; the prose on each page is hand-written.
 
 {/* LIST-START — replaced by scripts/build-integrations.mjs */}
 <Cards>
@@ -31,8 +31,10 @@ The list below is auto-generated from the `integrations` table (enabled rows onl
 
 ## How a provider gets here
 
-Each enabled row in `integrations` ships with one or more **auth profiles** — `vendo_managed_pool` (Vendo holds the key), `byok_static` (you upload yours), `oauth_app_install` / `oauth2` (per-user OAuth), or `composio_managed` (brokered through Composio). The per-provider page lists which profiles are wired up and which one is the default.
+Each enabled `packages/integrations/<slug>/` entry ships with one or more **auth profiles** — `vendo_managed_pool` (Vendo holds the key), `byok_static` (you upload yours), `oauth_app_install` / `oauth2` (per-user OAuth), or `composio_managed` (brokered through Composio). The per-provider page lists which profiles are wired up and which one is the default.
+
+The runtime env-var contract for each integration — the env vars Vendo injects into your deployment when you bind a connection — comes from `packages/integrations/<slug>/integration.ts::connectionEnvVars`. The "Environment variables" table on each page is generated directly from that source, so it stays in lockstep with what the deploy worker actually writes.
 
 ## Adding a new integration
 
-Integrations come from the monorepo's `packages/integrations/<slug>/` modules. To propose a new one, open an issue on [`runvendo/vendo`](https://github.com/runvendo/vendo) with: provider name, what tools would consume it, and which auth profiles the provider supports.
+Integrations come from the monorepo's `packages/integrations/<slug>/` modules — one folder per slug, with `catalog.json` (metadata + auth profiles), `integration.ts` (env-var contract + adapter wiring), and optional `connect.ts` / `adapter.ts` / `webhook.ts`. Composio-bridged providers (Instagram, Supabase today) live under the same path and additionally declare a `composio_auth_config_id` in their catalog. To propose a new one, open an issue on [`runvendo/vendo`](https://github.com/runvendo/vendo) with: provider name, what tools would consume it, and which auth profiles the provider supports.

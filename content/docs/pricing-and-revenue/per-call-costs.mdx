@@ -25,23 +25,23 @@ cost_micros = round_half_to_even(
 
 Everything after this is integer micro-USD until the dashboard renders it.
 
-If `unit_cost` lookup returns no active row for the provider-resolved model, the proxy returns `402` *before* forwarding upstream — no upstream call, no cost, no `usage_events` row. This is the rate-miss block: it keeps Vendo from paying upstream costs Vendo can't price back to the tenant.
+If `unit_cost` lookup returns no active row for the provider-resolved model, the proxy returns `402` *before* forwarding upstream — no upstream call, no cost, no `usage_events` row. This is the rate-miss block: it keeps Vendo from paying upstream costs Vendo can't price back to the tenant. Each miss is also persisted to `rate_miss_events` (`supabase/migrations/192_rate_miss_events.sql`), bucketed hourly by `(tenant, integration, normalized_model)`, so operators can find them via `proxy/src/lib/rate-miss.ts` or the admin dashboard.
 
 ## What's metered
 
 | Integration | Metric | Pre-margin cost (illustrative) |
 |---|---|---|
-| OpenRouter | per 1M tokens, by model | `gpt-4o-mini`: $0.15 input / $0.60 output |
-| Anthropic | per 1M tokens, by model | `claude-sonnet-4-7`: ~$3 input / $15 output |
-| OpenAI | per 1M tokens, by model | varies — see OpenAI pricing |
+| OpenRouter | per token, by model | rates refreshed hourly from upstream `/api/v1/models` |
+| Anthropic | per 1M tokens, by model | `claude-sonnet-4-5`: $3 input / $15 output; opus tier (`claude-opus-4-*`): $15 input / $75 output (seed: `213_anthropic_rates_4_x_versioned.sql`) |
+| OpenAI | per 1M tokens, by model | `gpt-4o-mini`: $0.15 input / $0.60 output; `gpt-4o`: $2.50 input / $10 output (seed: `155_openai_rates_seed.sql`) |
 | ElevenLabs TTS | per 1,000 chars | $0.06 (Flash/Turbo), $0.12 (Multilingual) |
 | ElevenLabs STT | per audio hour | $0.39 |
 | AssemblyAI | per audio hour | $0.75 (ceiling, all features) |
 | muapi (image/video) | per submit call | model-dependent |
-| Telegram | per message sent | $0.001 (effectively rounding noise) |
+| Telegram | not metered | adapter returns `costUsd: 0` (`packages/integrations/telegram/adapter.ts`); bandwidth metering is a follow-up |
 | Notion | not metered through proxy | OAuth-only install, no `*-proxy` subdomain |
 
-Provider rates change. The live, authoritative numbers are at [`vendo.run/pricing`](https://vendo.run/pricing), which reads directly from the `rates` table and serves through a 1-hour cache.
+Provider rates change. The live, authoritative numbers are at [`vendo.run/pricing`](https://vendo.run/pricing), which reads directly from the `rates` table and serves through a 1-hour cache (`web/src/app/(marketing)/pricing/page.tsx` — `revalidate = 3600`).
 
 ## Where the margin sits
 
@@ -76,7 +76,7 @@ Proxy → DB:      record_billed_usage          # write the real cost row
 Proxy → KV:      settle(tenant, hold, actual) # refund (hold - actual)
 ```
 
-Hold caps are upper bounds, not averages:
+Hold caps are upper bounds, not averages (source: `proxy/src/balance/holds.ts`):
 
 | Adapter | Hold cap |
 |---|---|
@@ -84,6 +84,7 @@ Hold caps are upper bounds, not averages:
 | `elevenlabs`, `muapi` | $0.50 |
 | `assemblyai` | $0.20 |
 | `telegram` | $0.001 |
+| Any other adapter not in the map (e.g. `gemini`) | $1.00 (`HOLD_CAP_DEFAULT_USD`) |
 
 A request with a true cost of $0.003 still trips a $1.00 hold during the call, then refunds $0.997 once the upstream usage is known. This is invisible to your tool — `balance()` will momentarily show the lower value if you read it mid-call, but it self-heals within the response window.
 
@@ -102,18 +103,18 @@ These work at zero balance — handy for tools that list models in their UI or c
 
 If your tool is `tool_type: deployment`, you're also paying for Railway compute and the per-tenant Neon database. These don't go through the proxy — instead, the hourly `billing-rollup` worker samples Railway's GraphQL usage feed and Neon's metrics, applies the same margin rules, and writes a single deduction per tenant per hour per resource.
 
-Typical numbers (with the default 20% margin already folded in):
+Typical numbers (pre-margin; meter units shown match the `meters` table in `supabase/migrations/071_pricing_seed_data.sql`):
 
-| Resource | Pre-margin rate | At idle (1 tenant) |
-|---|---|---|
-| Railway vCPU | $0.000008 / second | minimal — most idle services pin near 0% CPU |
-| Railway memory | $0.000004 / GB-second | ~$10/GB-month — usually the biggest line item |
-| Railway volume storage | $0.15 / GB-month | small unless you store data on disk |
-| Railway egress | $0.05 / GB | usually small |
-| Neon compute | $0.106 / CU-hour | ~$5/month at 0.25 CU |
-| Neon storage | $0.35 / GB-month | small unless you have a heavy database |
+| Resource | Meter unit | Pre-margin rate | At idle (1 tenant) |
+|---|---|---|---|
+| Railway vCPU | `cpu_vcpu_minutes` | $0.000463 / vCPU-minute (~$0.0000077 / s) | minimal — most idle services pin near 0% CPU |
+| Railway memory | `memory_gb_minutes` | $0.000231 / GB-minute (~$0.000004 / GB-s) | ~$10/GB-month — usually the biggest line item |
+| Railway volume storage | `volume_gb_month` | $0.15 / GB-month | small unless you store data on disk |
+| Railway egress | `egress_gb` | $0.05 / GB | usually small |
+| Neon compute | `compute_cu_hour` | $0.106 / CU-hour | ~$5/month at 0.25 CU |
+| Neon storage | `storage_gb_month` | $0.35 / GB-month | small unless you have a heavy database |
 
-Cloudflare Workers and Pages (the proxy, app-proxy, web app) are not metered to tenants.
+Cloudflare Workers and Pages (the proxy, app-proxy, web app) are not metered to tenants. Cloudflare Workers and R2 meter rows do exist in the schema (see `supabase/migrations/071_pricing_seed_data.sql`) at `unit_cost = 0` for observational rollup; Pages has no meters at all. If a `usage_events` row shows up against a Cloudflare meter, it's still $0 to the tenant.
 
 The practical takeaway: a typical deployment-type tool at idle costs the tenant somewhere around **$12–15/month** in compute, plus whatever they spend on proxied API calls. App sleeping (services with no outbound activity for 10 minutes) cuts ~$5/month per idle tenant — but the sleeping mechanism is broken by anything that does outbound work (cron heartbeats, persistent DB connections, WebSockets), so most real tools don't get the benefit.
 

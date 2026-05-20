@@ -1,0 +1,23 @@
+---
+title: Concepts
+description: The mental model behind Vendo — what a tool is, how connections and the proxy work, how tenants are isolated, how billing happens.
+---
+
+Vendo is a platform for shipping open-source SaaS tools to non-technical tenants. The pages in this section explain the moving parts you'll touch as a tool author — what the platform considers a tool, how credentials and providers are brokered, how state changes reach your code, and how errors are surfaced.
+
+Read these first if you are new to Vendo. Each page focuses on one mental model; together they cover the platform's contract with your tool.
+
+## What's in this section
+
+- **[What is a tool](/docs/concepts/what-is-a-tool)** — The catalog entry tenants install. The three tool types (`deployment`, `downloadable`, `npm`) and how to pick one.
+- **[Two modes](/docs/concepts/two-modes)** — OSS/BYOK mode vs Vendo mode. Same SDK; the mode is selected by whether `VENDO_API_KEY` is set.
+- **[Multi-tenant](/docs/concepts/multi-tenant)** — How Vendo isolates tenants at the database (RLS), the network (subdomain), the binding trigger, and the proxy auth layer.
+- **[Request scoping](/docs/concepts/request-scoping)** — `forRequest` / `forUser` for per-end-user identity inside advanced Vendo deployments.
+- **[Connections and integrations](/docs/concepts/connections-and-integrations)** — The relationship between an integration (provider catalog), a connection (tenant credential), and a binding (one-per-app routing).
+- **[The proxy and credentials](/docs/concepts/proxy-and-credentials)** — Why your tool hits `{provider}-proxy.vendo.run` instead of the provider directly, and how the credentials worker refreshes OAuth tokens.
+- **[Credits and billing](/docs/concepts/credits-and-billing)** — The prepaid credit model, what your tool can read at runtime, and what suspension looks like.
+- **[Events](/docs/concepts/events)** — SSE stream of connection and billing changes for real-time UI.
+- **[Webhooks](/docs/concepts/webhooks)** — HMAC-SHA256 verification of inbound Vendo webhooks.
+- **[Errors](/docs/concepts/errors)** — The canonical `Vendo-Error-Code` values and their typed-class mappings.
+
+For the implementation walkthrough see [Build a tool](/docs/build-a-tool). For exact method signatures and HTTP shapes see [Reference](/docs/reference).
