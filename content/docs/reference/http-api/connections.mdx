@@ -1,0 +1,108 @@
+---
+title: Connections
+description: List bound and supported connections for the calling deployment.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## `GET /api/deployments/me/connections`
+
+Returns the joined list of bound and supported connections for the calling deployment's app. This is the endpoint the SDK's `connections.list()` wraps.
+
+### Auth
+
+App Key only (`vendo_sk_*` issued at deploy time). Connection-scoped keys are rejected (`401`). Identity JWTs are not accepted.
+
+### Request
+
+```http
+GET /api/deployments/me/connections HTTP/1.1
+Host: vendo.run
+Authorization: Bearer vendo_sk_…
+```
+
+### Query parameters
+
+| Param | Type | Description |
+|---|---|---|
+| `sandbox` | `"1"` | Optional. When set, strips credential payloads for "exclusive" providers (used by customize-mode sandboxes). |
+
+### Response: `200 OK`
+
+```json
+{
+  "connections": [
+    {
+      "slug": "openai",
+      "display_name": "OpenAI",
+      "category": "llm",
+      "profile": "vendo_managed_pool",
+      "status": "connected",
+      "api_key": "vendo_sk_…",
+      "base_url": "https://openrouter-proxy.vendo.run/v1",
+      "metadata": { },
+      "setup_url": null,
+      "error_message": null,
+      "env_bootstrap": { },
+      "branding": { }
+    },
+    {
+      "slug": "telegram",
+      "display_name": "Telegram",
+      "category": "messaging",
+      "status": "available",
+      "setup_url": "https://vendo.run/connections/telegram/connect?deployment_id=…"
+    }
+  ]
+}
+```
+
+### Status mapping
+
+| DB `connections.status` | Response `status` | Meaning |
+|---|---|---|
+| `active` | `connected` | Bound and healthy |
+| `needs_reauth` | `error` | OAuth token expired |
+| `error` | `error` | Provider rejected credential |
+| `revoked` | (filtered out) | Falls back to `available` if the slug is in the tool's supported list |
+| (no binding) | `available` | Tenant has not connected this provider yet |
+
+### Fields
+
+| Field | Type | Notes |
+|---|---|---|
+| `slug` | `string` | Integration slug (e.g. `openai`, `telegram`) |
+| `display_name` | `string` | Catalog display name |
+| `category` | `string` | `llm`, `messaging`, `tts`, etc. |
+| `profile` | `string` | Profile of the binding (`oauth`, `api_key`, `vendo_managed_pool`, …) |
+| `status` | `string` | One of `connected`, `available`, `pending_setup`, `error` |
+| `api_key` | `string` \| `null` | Only set when `profile == "vendo_managed_pool"` — same `vendo_sk_*` your app already has, exposed here for clients that pin the bearer per provider |
+| `base_url` | `string` \| `null` | Only set when `profile == "vendo_managed_pool"` — `{provider}-proxy.vendo.run` |
+| `metadata` | `object` | Per-binding metadata (e.g. account name, scope list) |
+| `setup_url` | `string` \| `null` | Where to send the user to connect this provider |
+| `error_message` | `string` \| `null` | Human-readable error when `status == "error"` |
+| `env_bootstrap` | `object` \| `null` | Env vars the deploy worker would inject if this connection were bound |
+| `branding` | `object` | Logo, color, marketing copy for the connect button |
+
+The full response shape is built in [`web/src/lib/connections/list-for-deployment.ts`](https://github.com/runvendo/vendo/blob/main/web/src/lib/connections/list-for-deployment.ts).
+
+### Which slugs appear
+
+Tools with `surface_all_connections: true` in `apps_catalog` (e.g. Hermes) get every enabled integration in the catalog. Other tools see only the slugs listed in their `apps_catalog.supported_connections` array.
+
+<Callout type="info">
+  This endpoint is single-shot, not a stream. Connections that change while your app is running won't update the response from a previous call. Subscribe to [`GET /api/deployments/me/events`](events) for live updates, or restart the container to re-read.
+</Callout>
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `401` | `{ "error": { "message": "Missing or invalid Bearer token" } }` | No Bearer, or token doesn't start with `vendo_sk_` |
+| `401` | `{ "error": { "message": "Invalid or revoked token" } }` | Connection-scoped key, revoked key, or unknown app |
+| `500` | `{ "error": { "message": "Internal server error" } }` | Vendo bug |
+
+### Related
+
+- [`/docs/reference/sdk`](/docs/reference/sdk) — `connections.list()` and `connections.get()` wrap this endpoint
+- [Events](events) — live connection-state changes

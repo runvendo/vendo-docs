@@ -1,0 +1,82 @@
+---
+title: vendo ssh
+description: Open an interactive shell on a running Vendo deployment.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Synopsis
+
+```bash
+vendo ssh <deployment-slug-or-id>
+```
+
+Opens an interactive shell on one of your tenant's deployments. The session is brokered through `ssh.vendo.run` — Vendo holds the SSH key, audits the session, and proxies stdio over a WebSocket. You never see the underlying provider's SSH key.
+
+Exit with `Ctrl-D` or by typing `exit`.
+
+Requires `vendo login`.
+
+## Arguments
+
+| Argument | Description |
+|---|---|
+| `deployment-slug-or-id` | Required. Either the deployment slug (e.g. `support-bot`) or the deployment id (e.g. `dpl_abc`). Must be a deployment you own. |
+
+## How it works
+
+1. The CLI POSTs to [`/api/cli/ssh/<deployment>`](../http-api) with your CLI bearer.
+2. The server validates ownership and mints a short-lived session token bound to a `wss://ssh.vendo.run/...` URL.
+3. The CLI opens that WebSocket.
+4. Local stdin is switched to raw mode and forwarded over the socket; remote stdout is written back to the local terminal.
+5. `SIGWINCH` (terminal resize) is forwarded as a resize frame.
+6. `Ctrl-C` is forwarded to the remote process — it does **not** kill the CLI.
+7. The CLI exits with the broker-reported exit code when the remote shell closes.
+
+## Output
+
+On connect:
+
+```
+✓ Connected to support-bot
+$ _
+```
+
+On broker error or timeout:
+
+```
+[ssh-broker] session expired
+```
+
+On WebSocket error:
+
+```
+WS error: <message>
+```
+
+## Examples
+
+By slug:
+
+```bash
+vendo ssh support-bot
+```
+
+By id:
+
+```bash
+vendo ssh dpl_abc
+```
+
+## Audit and security
+
+Every session is logged (start time, end time, duration, user, deployment) and recorded in Vendo's audit trail. The deployment container never has provider-managed SSH keys in its environment — only a scoped `vendo_sk_*` proxy token, which is rate-limited and spend-capped server-side.
+
+<Callout type="warn">
+  `vendo ssh` opens a real shell on production infrastructure. Treat it like any other production access channel — prefer reading logs or using the dashboard's restart/rollback UIs when a shell isn't strictly necessary.
+</Callout>
+
+## Related
+
+- [vendo login](login)
+- [HTTP API > Deploy](/docs/reference/http-api/deploy) — managing the deployment from the API

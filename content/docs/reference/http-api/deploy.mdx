@@ -1,0 +1,128 @@
+---
+title: Deploy
+description: Trigger a deployment from the dashboard or CLI-driven wizard.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## `POST /api/deploy`
+
+Triggers a deployment of a catalog tool into the calling user's tenant. This is what the deploy wizard calls when the user clicks "Launch". It is **session-authenticated only** — deployed tools and external SDKs cannot deploy on a tenant's behalf.
+
+### Auth
+
+Session cookie (`vendo.run` dashboard). No Bearer token form.
+
+### Pre-flight checks
+
+Before provisioning, the endpoint enforces:
+
+- The session belongs to an authenticated user.
+- The user owns the target tenant (`tenants.owner_id`).
+- The user has chosen a tenant slug (`slug_chosen`).
+- The billing gate is satisfied (skipped for test tenants and Vendo admins).
+- The tool is enabled in the catalog and has an active release.
+- The desired deployment slug is unique within the tenant.
+- The supplied bindings are valid for the tool's required integrations.
+
+### Request body
+
+```jsonc
+{
+  "toolSlug": "hermes",
+  "tenantSlug": "acme",
+  "deploymentSlug": "support-bot",
+  "deploymentName": "Support Bot",
+  "adminPassword": "…",          // when the tool seeds an admin user
+  "userVariables": { },          // wizard `user_required` / `user_optional` inputs
+  "bindings": { },               // selected connections per provider
+  "selectedBindings": { },
+  "pendingBindings": { },
+  "userInput": { }
+}
+```
+
+Full schema lives in [`web/src/app/api/deploy/route.ts`](https://github.com/runvendo/vendo/blob/main/web/src/app/api/deploy/route.ts).
+
+### Response: `201 Created`
+
+```json
+{ "deploymentId": "dpl_…" }
+```
+
+Use the returned id with `/api/deployments/{id}/…` endpoints to watch logs, restart, suspend, etc.
+
+### Errors
+
+| Status | `code` | Cause |
+|---|---|---|
+| `400` | `invalid_body`, `invalid_slug`, `invalid_bindings`, … | Validation failure |
+| `401` | `unauthorized` | No session |
+| `402` | `billing_gate` | Tenant needs to fund credits before deploying |
+| `403` | `tool_disabled`, `not_owner`, … | Authenticated but not permitted |
+| `409` | `slug_conflict` | Deployment slug taken inside this tenant |
+
+Body shape on error:
+
+```json
+{ "error": { "code": "slug_conflict", "message": "Deployment slug already in use" } }
+```
+
+### Rate limit
+
+Subject to the `deployLimiter`. Bursts beyond the limit return `429`.
+
+<Callout type="warn">
+  This endpoint provisions real infrastructure (Railway service, domain, Postgres, …) and may run for tens of seconds. Treat it as a non-idempotent mutation — if the response is `5xx` or times out, fetch the user's deployment list before retrying to avoid double-creating.
+</Callout>
+
+## `POST /api/connections/bind-deployment`
+
+Idempotent. Called by the connect portal when `?deployment_id=<id>` is in the URL. Writes `app_connection_bindings` so a deployment uses the freshly-created connection.
+
+### Auth
+
+Session cookie.
+
+### Request body
+
+```json
+{
+  "deploymentId": "dpl_…",
+  "providerSlug": "openai",
+  "connectionId": "cn_…"
+}
+```
+
+### Response
+
+```json
+{ "ok": true }
+```
+
+or
+
+```json
+{ "ok": false, "reason": "tenant_mismatch" }
+```
+
+Upserts on `(app_id, provider_slug)`. The `enforce_binding_tenant_match` database trigger guards against cross-tenant bindings.
+
+## Owner-only deployment management
+
+The rest of the per-deployment surface lives under `/api/deployments/{id}/…` and is session-authenticated (owner only). These are dashboard-only — not part of the SDK or CLI contract — and beyond the scope of this page. Notable ones:
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/deployments/{id}` | Current state |
+| `POST /api/deployments/{id}/restart` | Restart the container |
+| `POST /api/deployments/{id}/suspend` | Pause (preserves data) |
+| `POST /api/deployments/{id}/resume` | Resume from suspended |
+| `POST /api/deployments/{id}/destroy` | Tear down (irreversible) |
+| `GET /api/deployments/{id}/usage` | Hourly cost rollup |
+| `POST /api/deployments/{id}/rename` | Change deployment slug |
+
+### Related
+
+- [Build a tool > Deploy and publish](/docs/deploy-and-publish)
+- [SDK > deployment](/docs/reference/sdk)

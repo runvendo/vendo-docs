@@ -1,0 +1,105 @@
+---
+title: User identity
+description: How Vendo conveys end-user identity to your tool — headers, identity tokens, and the session check.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+When a tenant's user visits your deployment, Vendo's app-proxy authenticates them, then forwards their identity to your container as a set of HTTP headers. The SDK exposes this via `Vendo.forRequest(headers)` and `Vendo.forUser(jwt)` — both narrow the SDK client to act on behalf of one user without changing the underlying API key.
+
+This page covers the HTTP surface behind those helpers: which headers your tool receives, how identity tokens work, and the one session-check endpoint the dashboard exposes.
+
+## Identity headers (proxy → your app)
+
+The app-proxy [strips inbound `X-Vendo-*` headers, then injects](https://github.com/runvendo/vendo/blob/main/cloudflare/app-proxy/src/auth.ts) the authenticated user's identity:
+
+| Header | Description |
+|---|---|
+| `X-Vendo-User-Id` | Stable Supabase user id |
+| `X-Vendo-User-Email` | Email address |
+| `X-Vendo-User-Name` | Display name (may be empty) |
+| `X-Vendo-Tenant-Id` | Tenant the deployment belongs to |
+| `X-Vendo-Role` | `owner`, `member`, or `viewer` |
+
+<Callout type="warn">
+  These headers are **strip-then-inject** but not HMAC-signed. They're trustworthy because they come over a private channel from the app-proxy directly to your container — clients cannot forge them through the proxy. Do not trust `X-Vendo-*` headers that bypass the app-proxy (e.g. on a direct Railway URL).
+
+  Provider proxies (`{provider}-proxy.vendo.run`) do **not** receive or trust `X-Vendo-Tenant-Id`. They derive the tenant from the authenticated `vendo_sk_*` bearer.
+</Callout>
+
+Pass these straight to the SDK to scope a request to one user:
+
+```typescript
+const userClient = vendo.forRequest(request.headers);
+await userClient.connections.list();  // scoped to that user's view
+```
+
+```python
+user_client = vendo.for_request(request.headers)
+await user_client.connections.list()
+```
+
+## Identity tokens
+
+When you need to act on behalf of a user from a context without the original request headers — a background job, a different process, an OAuth callback — use an identity token (Supabase JWT).
+
+Identity tokens are issued by the OAuth 2.1 server at `auth.vendo.run`. They are short-lived (1 hour) Supabase JWTs. Vendo accepts them on a small set of endpoints that explicitly resolve `tenant_id` from the JWT subject:
+
+| Endpoint | Accepts identity JWT? |
+|---|---|
+| `GET /api/v1/balance` | yes |
+| `GET /api/deployments/me/connections` | no — App Key only |
+| `GET /api/deployments/me/events` | no — App Key only |
+
+Identity tokens are verified via JWKS at `${SUPABASE_URL}/auth/v1/.well-known/jwks.json` (ES256 / RS256). `exp` is enforced; the cache window for JWKS is 10 minutes with a one-shot refetch on `kid` miss.
+
+### SDK usage
+
+```typescript
+const userClient = vendo.forUser(jwt);
+await userClient.billing.balance();
+```
+
+```python
+user_client = vendo.for_user(jwt)
+await user_client.billing.balance()
+```
+
+The SDK sends the JWT as the `Authorization` header. Endpoints that don't accept identity tokens (e.g. `connections.list()`) will raise — call those with the deployment's App Key, not with `forUser`.
+
+## `GET /api/auth/me`
+
+Session-check endpoint for the dashboard UI. Returns whether the calling browser is signed in to vendo.run, and if so, the user's id and email.
+
+### Auth
+
+Session cookie. No Bearer token. Returns `200` with `loggedIn: false` for anonymous callers — does not 401.
+
+### Request
+
+```http
+GET /api/auth/me HTTP/1.1
+Host: vendo.run
+Cookie: sb-…
+```
+
+### Response: `200 OK`
+
+```json
+{ "loggedIn": true, "userId": "u_…", "email": "user@example.com" }
+```
+
+```json
+{ "loggedIn": false, "userId": null, "email": null }
+```
+
+Always `Cache-Control: no-store`.
+
+<Callout type="info">
+  `/api/auth/me` is not useful from deployed tools — it requires the dashboard's session cookie. Use the identity headers above (or [`GET /api/v1/balance`](billing) with an identity JWT) to confirm identity from your tool.
+</Callout>
+
+### Related
+
+- [SDK > forRequest / forUser](/docs/reference/sdk)
+- [Multi-tenant concepts](/docs/concepts/multi-tenant)

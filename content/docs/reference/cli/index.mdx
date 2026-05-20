@@ -1,0 +1,95 @@
+---
+title: Vendo CLI
+description: Install, log in, develop locally with real Vendo identity, validate manifests, SSH into deployments.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The Vendo CLI is `vendo` — a small Node-based tool for working against `vendo.run` from your terminal. Six commands cover the full surface: authenticate, develop locally, validate a manifest, and SSH into a running deployment.
+
+| Package | npm | Source |
+|---|---|---|
+| `@vendodev/cli` | [npmjs.com/package/@vendodev/cli](https://www.npmjs.com/package/@vendodev/cli) | [runvendo/vendo-cli](https://github.com/runvendo/vendo-cli) |
+
+## Install
+
+```bash
+npm install -g @vendodev/cli
+vendo --help
+```
+
+Requires Node 20 or newer.
+
+## Commands
+
+| Command | Description |
+|---|---|
+| [`vendo login`](login) | Authorize the CLI against your Vendo account |
+| [`vendo logout`](logout) | Revoke the local credential server-side and remove it locally |
+| [`vendo whoami`](whoami) | Show the logged-in account, tenant, and credit balance |
+| [`vendo validate [file]`](validate) | Lint `vendo.yaml` against the deploy manifest schema |
+| [`vendo dev`](dev) | Write a `.env.vendo-dev` for sourcing into a local OSS app |
+| [`vendo ssh <deployment>`](ssh) | Open an interactive shell on a running deployment |
+
+Get per-command help with `vendo <command> --help`.
+
+## Global flags
+
+| Flag | Description |
+|---|---|
+| `--help`, `-h` | Print usage |
+| `--version`, `-v` | Print the installed CLI version |
+
+`vendo login` accepts `--api-base <url>` to override the Vendo web URL (default `https://vendo.run`); the override is persisted in the local config so subsequent commands use it automatically.
+
+## Local config
+
+`vendo login` writes `~/.vendo/config.json` with mode `0600`:
+
+```jsonc
+{
+  "apiBase": "https://vendo.run",
+  "apiKey": "vendo_sk_…",
+  "tenantId": "t_…",
+  "issuedToEmail": "you@example.com",
+  "issuedAt": "2026-05-20T12:00:00Z"
+}
+```
+
+The stored `apiKey` is a long-lived `vendo_sk_*` proxy key scoped to your tenant. Revoke it via [`vendo logout`](logout) (which also clears the file) or from the dashboard's API Keys panel.
+
+<Callout type="warn">
+  The CLI does not respect `VENDO_API_KEY` from the environment — it always reads `~/.vendo/config.json`. To use a different key for one command, run `vendo logout` and re-login, or pass `--api-base` to switch to a different Vendo instance.
+</Callout>
+
+## Auth model
+
+`vendo login` authenticates via PKCE:
+
+1. CLI generates a code verifier and challenge.
+2. Opens the browser to `vendo.run/cli/authorize?...` for user consent.
+3. Browser POSTs an auth code back to a local loopback callback.
+4. CLI exchanges code + verifier at `POST /api/cli/exchange` for a fresh `vendo_sk_*` key plus tenant metadata.
+
+The exchanged key is what every other CLI command (and HTTP request through [`/api/cli/*`](../http-api)) uses to authenticate.
+
+## Network surface
+
+The CLI talks only to your `apiBase` (default `vendo.run`) plus, for [`vendo ssh`](ssh), a WebSocket broker at `ssh.vendo.run`. No telemetry, no analytics endpoints.
+
+## Develop
+
+To work on the CLI itself:
+
+```bash
+git clone git@github.com:runvendo/vendo-cli.git
+cd vendo-cli
+npm install
+npm test
+npm run smoke   # `vendo --help`
+```
+
+## Related
+
+- [HTTP API > index](/docs/reference/http-api) — the surface the CLI calls under the hood
+- [Build a tool > vendo.yaml authoring](/docs/build-a-tool) — what `vendo validate` checks against

@@ -1,0 +1,69 @@
+---
+title: vendo login
+description: Authorize the CLI against your Vendo account via a browser PKCE flow.
+---
+
+## Synopsis
+
+```bash
+vendo login [--force] [--api-base <url>]
+```
+
+Opens your browser to complete the Vendo OAuth-style PKCE flow, then stores a long-lived API key at `~/.vendo/config.json` (mode `0600`). Subsequent CLI commands use that credential.
+
+## Flags
+
+| Flag | Description |
+|---|---|
+| `--force` | Re-issue a key even if one is already cached locally |
+| `--api-base <url>` | Override the Vendo web URL (default: `https://vendo.run`) |
+
+## Output
+
+On success:
+
+```
+✓ Logged in as you@example.com (tenant t_abc).
+```
+
+## Examples
+
+Standard login:
+
+```bash
+vendo login
+```
+
+Force-rotate the locally stored key (useful after revoking from the dashboard):
+
+```bash
+vendo login --force
+```
+
+Log into a non-production Vendo instance:
+
+```bash
+vendo login --api-base https://staging.vendo.run
+```
+
+## What it writes
+
+`~/.vendo/config.json` containing:
+
+```jsonc
+{
+  "apiBase": "https://vendo.run",
+  "apiKey": "vendo_sk_…",
+  "tenantId": "t_…",
+  "issuedToEmail": "you@example.com",
+  "issuedAt": "2026-05-20T12:00:00Z"
+}
+```
+
+The file is created with mode `0600`. The key is a real `vendo_sk_*` proxy key with App Key scope, usable for any endpoint that accepts CLI-issued bearer tokens.
+
+## Related
+
+- [vendo logout](logout) — revoke and remove the credential
+- [vendo whoami](whoami) — show the active account
+- [HTTP API > User identity](/docs/reference/http-api/users) — how the issued key is used downstream

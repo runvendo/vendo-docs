@@ -1,0 +1,99 @@
+---
+title: Events (SSE)
+description: Server-sent stream of connection and billing events for the calling deployment.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## `GET /api/deployments/me/events`
+
+Server-sent events channel scoped to the calling deployment's app. The SDK's `events.subscribe()` wraps this endpoint and reconnects on transient failures.
+
+### Auth
+
+App Key only (`vendo_sk_*`). Connection-scoped keys and identity JWTs are rejected.
+
+### Request
+
+```http
+GET /api/deployments/me/events HTTP/1.1
+Host: vendo.run
+Authorization: Bearer vendo_sk_…
+Accept: text/event-stream
+Last-Event-ID: <optional id of last received event>
+```
+
+`Last-Event-ID` is honored for replay-on-reconnect.
+
+### Response
+
+`Content-Type: text/event-stream`. The server emits a `: ping` heartbeat every 25 seconds to keep proxies from closing the connection, plus zero or more event blocks of the form:
+
+```
+id: <event-id>
+event: <kind>
+data: <json-payload>
+
+```
+
+### Event kinds
+
+| `kind` | Payload fields | Meaning |
+|---|---|---|
+| `connection.connected` | `slug`, `connection_id` | Tenant connected an integration |
+| `connection.disconnected` | `slug`, `connection_id` | Tenant disconnected an integration |
+| `connection.changed` | `slug`, `connection_id` | Binding metadata changed |
+| `connection.status_changed` | `slug`, `connection_id`, `status` | Connection status moved (`connected`, `available`, `pending_setup`, `needs_reauth`, `error`, `revoked`) |
+| `billing.usage_recorded` | `provider`, `micros` | A call was billed (USD × 10⁶) |
+| `billing.balance_changed` | `remaining_micros` | Wallet balance updated |
+| `billing.cap_warned` | `window` (`daily` \| `monthly`), `pct` | App-level spend cap crossed a warning threshold |
+| `billing.cap_tripped` | `window` (`daily` \| `monthly`) | Spend cap exhausted; subsequent calls in the window will 402 |
+
+Every payload also includes `id` (event id) and `at` (ISO 8601 timestamp).
+
+### Legacy event aliases
+
+For SDK versions `<=1.0.1`, the server also emits the same payload under legacy underscore-style event names:
+
+| Canonical | Legacy alias |
+|---|---|
+| `connection.connected` | `connection_created` |
+| `connection.disconnected` | `connection_deleted` |
+| `connection.status_changed`, `connection.changed` | `connection_updated` |
+
+Each alias is a separate SSE block — your EventSource fires both listeners with the same data. The aliases will be removed in a future SDK rev; see [vendo-sdk-js#13](https://github.com/runvendo/vendo-sdk-js/issues/13). New clients should listen only on the canonical `kind`.
+
+### Concurrency cap
+
+Each app may hold a small number of concurrent SSE streams. Exceeding the cap returns `429` with body `{ "error": { "message": "rate_limit_sse_streams" } }`. The cap is advisory and racey under burst — closing an idle stream frees a slot. Reuse a single subscription per process where possible.
+
+### Example
+
+```bash
+curl -N \
+  -H "Authorization: Bearer $VENDO_API_KEY" \
+  -H "Accept: text/event-stream" \
+  https://vendo.run/api/deployments/me/events
+```
+
+```
+: ping
+
+id: evt_01H…
+event: connection.connected
+data: {"id":"evt_01H…","at":"2026-05-20T12:00:00Z","kind":"connection.connected","slug":"openai","connection_id":"cn_…"}
+
+id: evt_01H…
+event: billing.usage_recorded
+data: {"id":"evt_01H…","at":"2026-05-20T12:00:01Z","kind":"billing.usage_recorded","provider":"openrouter","micros":1234}
+
+```
+
+<Callout type="warn">
+  The stream does not buffer events while disconnected beyond what `Last-Event-ID` can replay. For durable state, treat events as cache invalidation signals and re-read from [`GET /api/deployments/me/connections`](connections) on reconnect.
+</Callout>
+
+### Related
+
+- [Connections](connections) — single-shot read of current state
+- [SDK > Events](/docs/concepts/events) — high-level usage

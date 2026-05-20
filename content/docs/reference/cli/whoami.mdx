@@ -1,0 +1,45 @@
+---
+title: vendo whoami
+description: Show the email, tenant, and credit balance of the logged-in CLI account.
+---
+
+## Synopsis
+
+```bash
+vendo whoami
+```
+
+Prints the email, tenant id, issuance time, API base URL, and current credit balance for the locally stored CLI credential. Useful before running [`vendo dev`](dev) or [`vendo ssh`](ssh) to confirm which tenant you're acting against.
+
+## Flags
+
+This command takes no flags besides `--help` / `-h`.
+
+## Output
+
+```
+Email:    you@example.com
+Tenant:   t_abc
+Issued:   2026-05-20T12:00:00Z
+API base: https://vendo.run
+Balance:  $12.50
+```
+
+The balance line is best-effort. If the call to [`/api/cli/balance`](../http-api/billing) fails, you'll see:
+
+```
+Balance:  (unavailable: <reason>)
+```
+
+When there is no local credential:
+
+```
+Not logged in. Run `vendo login`.
+```
+
+Exits non-zero in that case.
+
+## Related
+
+- [vendo login](login)
+- [HTTP API > Billing](/docs/reference/http-api/billing) — the underlying balance endpoint
