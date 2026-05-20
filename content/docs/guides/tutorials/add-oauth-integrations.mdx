@@ -1,0 +1,527 @@
+---
+title: Add OAuth integrations
+description: Wire a Notion + Google Drive style OAuth provider into a tool so both OSS and Vendo modes work — declaration, code, and the connect dance.
+---
+
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+
+You have a tool that talks to no providers, and you want it to read pages from Notion (or files from Google Drive, or rows from Supabase). The provider needs OAuth, the access token is short-lived, and your tool has to keep working in both modes: OSS (the developer brings their own personal token in `.env`) and Vendo (the tenant runs an OAuth dance with Vendo's app credentials and the token refreshes transparently).
+
+The good news: the SDK hides almost all of this. You'll write one `vendo.token("notion")` call, declare one line in `vendo.yaml`, and handle one error class — `NotConnected` — when the user hasn't completed the OAuth dance yet. This tutorial walks the whole loop end-to-end, including the unhappy paths.
+
+## What you'll need
+
+- A tool already running on Vendo (private deploy is fine — follow [Telegram bot from scratch](/docs/guides/tutorials/telegram-bot-from-scratch) or [Ship a CRM tool to the catalog](/docs/guides/tutorials/ship-a-crm-tool-to-the-catalog) first if you're starting from zero).
+- A Vendo account with the integration you want to add already enabled in the platform — check **Settings → Connections** in the dashboard. Notion, Google Drive, Slack, Linear, Stripe, GitHub, and ~15 other Composio-brokered providers are wired today. If the provider doesn't exist yet, the runtime SDK can't call it; [open an issue](https://github.com/runvendo/vendo/issues/new) describing the auth model and what the tool needs.
+- Local Python or TypeScript dev set up — you already used this in the earlier tutorials.
+
+This tutorial uses Notion as the worked example because it shows every moving part: OAuth dance, token refresh, and a real API call. Substitute any OAuth integration name and the same pattern applies.
+
+---
+
+<Steps>
+
+<Step>
+
+## Read the mental model first
+
+Three terms that look interchangeable but aren't, and getting these straight makes the rest of the tutorial twenty minutes shorter:
+
+- An **integration** is a provider (Notion, Google Drive). One entry in Vendo's catalog. Shared across the platform.
+- A **connection** is one tenant's credential for one integration. A tenant might have a Notion connection (a token from running OAuth once) and a Google Drive connection. Connections are per-tenant; they never cross.
+- A **binding** glues a connection to a deployment. Without a binding, the proxy returns 403 `binding_missing` the moment your tool tries to use that provider — even if the connection exists.
+
+You declare the integration in `vendo.yaml`. The tenant creates the connection (and the binding) by running the OAuth dance during the deploy wizard. From your code, you call `vendo.token("notion")` and the SDK handles binding resolution, token vending, and refresh.
+
+The full version is in [Connections and integrations](/docs/concepts/connections-and-integrations) and [The proxy and credentials](/docs/concepts/proxy-and-credentials).
+
+</Step>
+
+<Step>
+
+## Declare the provider in vendo.yaml
+
+```yaml
+# vendo.yaml
+name: my-tool
+version: 1
+runtime: python  # or typescript
+integrations:
+  - provider: notion
+  # Add more here as needed:
+  # - provider: googledrive
+  #   optional: true
+health:
+  path: /healthz
+```
+
+What declaring `notion` actually does, in deploy order:
+
+1. **Wizard step.** When a tenant deploys, the wizard renders a Connect step for every integration in the list. The tenant either picks an existing Notion connection (if they already ran the OAuth dance for another tool) or clicks **Connect Notion**, which opens a popup to `<provider>-oauth-start.vendo.run`, then to Notion's hosted OAuth page, then back through Vendo's callback. On return, a new `connections` row appears in the tenant's account.
+2. **Binding write.** Once the tenant completes the Connect step, the deploy worker writes an `app_connection_bindings` row tying their connection to this deployment for this provider.
+3. **Env-var materialization.** On boot — and on every subsequent rebind — the deploy worker reads `packages/integrations/notion/integration.ts` for the `connectionEnvVars` registry and writes the resulting env vars (`NOTION_TOKEN`, for the standard Notion integration) into your container's environment as `kind='integration'` rows in `deployment_env_vars`. You read them like any other env var.
+
+If your tool's integration is optional — say, an "import from Notion" button that the tenant can skip — set `optional: true`. The wizard then lets the tenant continue without connecting, and your code is responsible for handling the case where the env var is empty.
+
+The full integrations syntax is in [`vendo.yaml` § Integrations](/docs/build-a-tool/vendo-yaml/integrations).
+
+</Step>
+
+<Step>
+
+## Use the SDK to read the token
+
+The whole point of declaring the integration is that your code now reads `vendo.token("notion")` and gets back a usable token in either mode. You don't branch on `is_vendo_mode()`; the SDK does that internally and you never write the resolution logic by hand.
+
+<Tabs items={["Python", "TypeScript", "Swift"]}>
+<Tab value="Python">
+
+```python
+import vendo
+from vendo.errors import NotConnected, NeedsReauth
+
+
+def list_notion_databases(client: vendo.Vendo) -> list[dict]:
+    token = client.token("notion")  # OAuth-refreshed in Vendo mode; NOTION_TOKEN in OSS mode
+
+    import urllib.request
+    import json
+
+    req = urllib.request.Request(
+        "https://api.notion.com/v1/search",
+        data=json.dumps({"filter": {"value": "database", "property": "object"}}).encode(),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read())["results"]
+```
+
+</Tab>
+<Tab value="TypeScript">
+
+```typescript
+import { Vendo, NotConnected, NeedsReauth } from "@vendodev/sdk";
+
+async function listNotionDatabases(vendo: Vendo) {
+  const token = await vendo.token("notion");
+
+  const resp = await fetch("https://api.notion.com/v1/search", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Notion-Version": "2022-06-28",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ filter: { value: "database", property: "object" } }),
+  });
+
+  const data = await resp.json();
+  return data.results;
+}
+```
+
+</Tab>
+<Tab value="Swift">
+
+```swift
+import Vendo
+import Foundation
+
+func listNotionDatabases(vendo: Vendo) async throws -> [[String: Any]] {
+    let token = try await vendo.token("notion")
+
+    var request = URLRequest(url: URL(string: "https://api.notion.com/v1/search")!)
+    request.httpMethod = "POST"
+    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    request.setValue("2022-06-28", forHTTPHeaderField: "Notion-Version")
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = try JSONSerialization.data(withJSONObject: [
+        "filter": ["value": "database", "property": "object"]
+    ])
+
+    let (data, _) = try await URLSession.shared.data(for: request)
+    let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    return (json?["results"] as? [[String: Any]]) ?? []
+}
+```
+
+</Tab>
+</Tabs>
+
+Behind the scenes, `vendo.token("notion")` walks this chain (also covered in [Two modes](/docs/concepts/two-modes)):
+
+1. Is `VENDO_TOKEN_NOTION` set? Return it. (Escape hatch for tests.)
+2. Is `VENDO_API_KEY` set? Fetch from `credentials.vendo.run/notion` — Vendo's credentials worker decrypts (or refreshes, for OAuth-backed connections) and returns a fresh token. **Vendo mode.**
+3. Is `NOTION_TOKEN` set? Return it. **OSS mode.**
+4. Nothing matched. Raise `NotConnected("set NOTION_TOKEN")`.
+
+In Vendo mode the token comes from a connection that may be `oauth_app_install` (Vendo-owned OAuth client) or `composio_managed` (Vendo brokered the OAuth via Composio, with refresh happening upstream). Either way the SDK gets back a non-expired access token. Tokens that are within 60 seconds of expiry get refreshed transparently; your code never sees a stale token.
+
+</Step>
+
+<Step>
+
+## Run it locally as OSS with a personal token
+
+Before deploying, verify the API call works against Notion's real surface using a personal integration token. This is OSS mode — no `VENDO_API_KEY`, no proxy, no Vendo OAuth flow.
+
+For Notion specifically:
+
+1. Open [Notion's developer settings](https://www.notion.so/profile/integrations) and create a new internal integration. Copy the **Internal Integration Token** — it starts with `secret_`.
+2. In one of your Notion workspaces, open a page or database, click the `...` menu, **Connections**, and add your integration. This is how Notion authorizes the token to read that specific resource.
+3. Set the env var:
+
+```bash
+NOTION_TOKEN=secret_...
+```
+
+Don't set `VENDO_API_KEY`. Then run your tool the same way you ran it for prior tutorials:
+
+<Tabs items={["Python", "TypeScript"]}>
+<Tab value="Python">
+
+```bash
+source .venv/bin/activate
+export $(cat .env | xargs)
+python -c "import vendo; from main import list_notion_databases; print(list_notion_databases(vendo.Vendo(api_key='byok')))"
+```
+
+</Tab>
+<Tab value="TypeScript">
+
+```bash
+export $(cat .env | xargs)
+npx tsx -e "import { Vendo } from '@vendodev/sdk'; import { listNotionDatabases } from './main'; listNotionDatabases(new Vendo({ apiKey: 'byok' })).then(console.log);"
+```
+
+</Tab>
+</Tabs>
+
+You should see your Notion databases listed (or an empty array, if the integration isn't connected to anything yet). If you see a 401 from Notion, the token doesn't have access to any resources — go back to step 2 and connect the integration to at least one page. The full OSS-mode model is in [Run locally as OSS](/docs/deploy-and-publish/local-oss).
+
+</Step>
+
+<Step>
+
+## Flip into Vendo mode
+
+Now do the same call against Vendo's managed credentials. Two changes:
+
+1. **Set `VENDO_API_KEY`** in your local env. Use a personal `vendo_sk_*` from the dashboard's **Settings → API Keys** page — that's your own developer key, fine to use locally.
+2. **Unset `NOTION_TOKEN`.** Leaving it set would shadow the Vendo lookup because of the resolution chain's escape hatch.
+
+```bash
+VENDO_API_KEY=vendo_sk_<paste>
+# NOTION_TOKEN intentionally unset
+```
+
+Run the same code:
+
+<Tabs items={["Python", "TypeScript"]}>
+<Tab value="Python">
+
+```bash
+python -c "import vendo; from main import list_notion_databases; print(list_notion_databases(vendo.Vendo()))"
+```
+
+</Tab>
+<Tab value="TypeScript">
+
+```bash
+npx tsx -e "import { Vendo } from '@vendodev/sdk'; import { listNotionDatabases } from './main'; listNotionDatabases(new Vendo()).then(console.log);"
+```
+
+</Tab>
+</Tabs>
+
+If you haven't run the Notion OAuth dance yet from your Vendo account, you'll see `NotConnected: notion`. That's the SDK telling you the binding doesn't exist yet. Two ways to fix it:
+
+- **From the dashboard.** Open **Settings → Connections**, click **Connect** next to Notion, and complete the OAuth popup. Re-run the script; it now succeeds.
+- **From your tool's UX.** Catch `NotConnected` and surface a connect button. That's the next step.
+
+</Step>
+
+<Step>
+
+## Handle NotConnected gracefully
+
+`vendo.token("notion")` raising `NotConnected` is the expected first run-state for any new tenant. The clean fix is to catch it in your tool's surface code and return a structured payload the frontend can act on.
+
+<Tabs items={["Python", "TypeScript", "Swift"]}>
+<Tab value="Python">
+
+```python
+import vendo
+from vendo.errors import NotConnected, NeedsReauth
+
+
+def list_notion_databases_safe(client: vendo.Vendo) -> dict:
+    try:
+        token = client.token("notion")
+    except NotConnected as e:
+        slug = e.slug or "notion"
+        connect_url = e.connect_url
+        if not connect_url and client.is_vendo_mode():
+            # Build one ourselves so the UI can deep-link
+            connect_url = client.connect_url(slug, return_to="https://yourapp.com/imports")
+        return {"needs_connection": slug, "connect_url": connect_url}
+    except NeedsReauth as e:
+        # Token exists but is no longer accepted by Notion. The user has to redo OAuth.
+        return {"needs_reauth": e.slug or "notion", "connect_url": e.connect_url}
+
+    # ... call Notion with token, return data
+```
+
+</Tab>
+<Tab value="TypeScript">
+
+```typescript
+import { Vendo, NotConnected, NeedsReauth, isVendoMode } from "@vendodev/sdk";
+
+async function listNotionDatabasesSafe(vendo: Vendo) {
+  let token: string;
+  try {
+    token = await vendo.token("notion");
+  } catch (e) {
+    if (e instanceof NotConnected) {
+      const slug = e.slug ?? "notion";
+      const connectUrl =
+        e.connectUrl ??
+        (isVendoMode()
+          ? await vendo.connectUrl(slug, { returnTo: "https://yourapp.com/imports" })
+          : undefined);
+      return { needsConnection: slug, connectUrl };
+    }
+    if (e instanceof NeedsReauth) {
+      return { needsReauth: e.slug ?? "notion", connectUrl: e.connectUrl };
+    }
+    throw e;
+  }
+
+  // ... call Notion with token, return data
+}
+```
+
+</Tab>
+<Tab value="Swift">
+
+```swift
+import Vendo
+
+func listNotionDatabasesSafe(vendo: Vendo) async throws -> Any {
+    do {
+        let token = try await vendo.token("notion")
+        // ... call Notion with token, return data
+        return ["ok": true]
+    } catch VendoError.notConnected(let slug, _) {
+        let connectURL = try? vendo.connectURL(slug: slug, returnTo: "https://yourapp.com/imports")
+        return ["needs_connection": slug, "connect_url": connectURL?.absoluteString as Any]
+    } catch VendoError.needsReauth(let slug, _, let connectURL) {
+        return ["needs_reauth": slug, "connect_url": connectURL?.absoluteString as Any]
+    }
+}
+```
+
+</Tab>
+</Tabs>
+
+On the frontend, when the response carries `needs_connection`, pop the connect URL in a child window:
+
+```typescript
+const res = await fetch("/api/notion/databases");
+const data = await res.json();
+
+if (data.needs_connection) {
+  window.open(data.connect_url, "vendo-connect", "width=560,height=720");
+}
+```
+
+Once the user finishes OAuth, the popup closes itself. Vendo emits a `connection.connected` webhook to your deployment; your handler calls `vendo.invalidate("notion")` to clear the in-process token cache, and the next call to `list_notion_databases_safe` succeeds.
+
+The Webhook side of this loop is the [Verify a Webhook recipe](/docs/guides/recipes/verify-webhook); the equivalent JSON contract for `data.execute`-style code paths is in [Handle NotConnected](/docs/guides/recipes/handle-not-connected). `NeedsReauth` is the same shape but raised when an existing connection's token was revoked upstream — the user has to redo OAuth from scratch.
+
+<Callout type="info">
+`connect_url` works only in Vendo mode. Calling it in OSS mode raises `VendoOnlyFeature`. In OSS mode, surface a "set `NOTION_TOKEN` in your env" instruction instead of a connect URL.
+</Callout>
+
+</Step>
+
+<Step>
+
+## Add provider-specific context (when needed)
+
+A few providers — Supabase, Instagram Graph, anything that needs a per-account identifier on every API call — surface extra metadata on the connection. Vendo resolves these once at OAuth-finish time and persists them on the connection so your tool can read them without making a "discover identity" call before every action.
+
+For example, Supabase actions require a project `ref`:
+
+<Tabs items={["Python", "TypeScript"]}>
+<Tab value="Python">
+
+```python
+import vendo
+
+client = vendo.Vendo()
+conn = client.connections.get("supabase")
+
+if conn is None:
+    raise RuntimeError("Supabase not connected")
+
+# conn.context is flat: { ref: "abcd1234" } for Supabase
+project_ref = conn.context.get("ref") if conn.context else None
+```
+
+</Tab>
+<Tab value="TypeScript">
+
+```typescript
+import { Vendo } from "@vendodev/sdk";
+
+const vendo = new Vendo();
+const conn = await vendo.connections.get("supabase");
+
+if (!conn) throw new Error("Supabase not connected");
+
+const projectRef = conn.context?.ref ?? null;
+```
+
+</Tab>
+</Tabs>
+
+`conn.context` is flattened — `conn.context.ref`, not `conn.metadata.context.supabase.ref`. The SDK normalizes the wire shape so your code reads one level of nesting regardless of the provider. The platform side is in [Connections and integrations § Per-account context](/docs/concepts/connections-and-integrations).
+
+Most providers (Notion, Google Drive, Slack) don't surface per-account context — `conn.context` is null and you don't need to think about it. The exceptions self-document: if your provider docs say "this API needs a project id / workspace id / account id," check the connection's `context` field before falling back to a discovery call.
+
+</Step>
+
+<Step>
+
+## Deploy and verify the OAuth dance from the tenant side
+
+Push your code, cut a new version of the template (or just rebuild the image and redeploy in private), and pick a fresh tenant to test as.
+
+The full deploy-wizard experience for a tenant who has never connected Notion:
+
+1. They click **Deploy** on your catalog listing.
+2. The Configure step renders the integrations group, including "Connect Notion" with the brand logo and a primary button.
+3. They click **Connect**. A popup opens at `https://vendo.run/api/oauth/notion/start` (or `composio` for Composio-brokered providers), then to Notion's hosted OAuth page where they pick the workspaces they want to share and click **Allow**.
+4. Notion redirects to Vendo's callback. Vendo encrypts the access token (and refresh token, if returned), inserts a `connections` row with `profile=oauth_app_install` (or `composio_managed`), and the popup closes.
+5. The dashboard's wizard advances. The deploy worker writes the `app_connection_bindings` row tying the new connection to the deployment, resolves `connectionEnvVars` for `notion` (`NOTION_TOKEN`), and writes it into `deployment_env_vars` as `kind='integration'`.
+6. The deploy continues. Your container boots with `NOTION_TOKEN` set.
+
+For Composio-brokered providers there's one additional moving part: token refresh happens upstream at Composio, and the credentials worker calls Composio's API to vend a fresh access token on every `vendo.token("notion")` call (cached per-colo for ~60s before expiry). Your code is identical; the plumbing under it differs.
+
+If the deploy gets stuck at the integrations step, the usual suspects are:
+
+- **The provider isn't enabled.** Check the dashboard's connections page — if the provider doesn't show up there, it's not wired into Vendo yet and you need to open an integrations request.
+- **The OAuth redirect URI isn't allow-listed.** Vendo's OAuth client configurations live in `integrations.oauth_client_config`. If the redirect URI is mis-configured, you'll see Notion (or Composio) reject the callback with `redirect_uri_mismatch`. This is a platform-side bug; file it against `runvendo/vendo`.
+- **The token was issued but the binding write failed.** Watch `deploy_logs` for the `persist_connection_env_vars` step. If it errored, the connection exists but the binding is missing — the proxy will 403 the moment your tool calls Notion.
+
+</Step>
+
+<Step>
+
+## Handle rebinding without restarting
+
+Tenants can swap their Notion connection from the dashboard's connections page after deploy. The platform handles this for you with two mechanisms:
+
+- **Env-var update.** The bind API runs the same resolver as deploy time and upserts new `deployment_env_vars` rows. The dashboard surfaces a "Restart to apply" banner so the tenant can pick the moment to recycle the container.
+- **Webhook signal.** Vendo emits `connection.disconnected` and then `connection.connected` events. Your webhook handler should call `vendo.invalidate(slug)` to clear the SDK's in-process token cache so the next read pulls the fresh credential without waiting for a restart.
+
+A minimal webhook handler that does both:
+
+<Tabs items={["Python", "TypeScript"]}>
+<Tab value="Python">
+
+```python
+import vendo
+from vendo.errors import ValidationError
+
+def handle_vendo_webhook(headers: dict, body: bytes) -> dict:
+    try:
+        event = vendo.webhooks.verify(headers, body)
+    except ValidationError:
+        return {"status": 400, "error": "invalid signature"}
+
+    if event.type in ("connection.connected", "connection.disconnected"):
+        slug = event.data.get("slug")
+        if isinstance(slug, str):
+            vendo.invalidate(slug)
+
+    return {"status": 200, "ok": True}
+```
+
+</Tab>
+<Tab value="TypeScript">
+
+```typescript
+import { Vendo, ValidationError } from "@vendodev/sdk";
+
+const vendo = new Vendo();
+
+export async function POST(request: Request) {
+  const rawBody = await request.text();
+  const headers = Object.fromEntries(request.headers.entries());
+
+  let event;
+  try {
+    event = vendo.webhooks.verify(headers, rawBody);
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      return Response.json({ error: "invalid signature" }, { status: 400 });
+    }
+    throw e;
+  }
+
+  if (event.type === "connection.connected" || event.type === "connection.disconnected") {
+    const slug = event.data["slug"];
+    if (typeof slug === "string") vendo.invalidate(slug);
+  }
+
+  return Response.json({ ok: true });
+}
+```
+
+</Tab>
+</Tabs>
+
+`vendo.invalidate(slug)` is local — no network call — and works in both modes. In OSS mode it's effectively a no-op because the SDK reads env vars on every call and doesn't cache. In Vendo mode it clears the cached `credentials.vendo.run` response so the next `token()` re-fetches from scratch.
+
+</Step>
+
+</Steps>
+
+---
+
+## Common errors and what they mean
+
+| You see | Where to look |
+|---|---|
+| `NotConnected: notion` | Tenant hasn't connected Notion yet. Surface the connect URL via `vendo.connectUrl("notion")`. See step 6. |
+| `NeedsReauth: notion` | Existing connection's refresh token was revoked upstream. The tenant has to redo OAuth from the dashboard. |
+| `VendoOnlyFeature: connect_url` | You called `connect_url` in OSS mode. Guard the call with `is_vendo_mode()`. |
+| HTTP 403 from `notion-proxy.vendo.run` with `binding_missing` | Connection exists but no binding to this deployment. Check `deploy_logs` for `persist_connection_env_vars`. |
+| `NOTION_TOKEN` is set but `vendo.token("notion")` returns the Vendo-mode token | OSS env vars are shadowed by Vendo mode when `VENDO_API_KEY` is also set. Unset one or the other. |
+| Token refresh fails in CI | The personal `vendo_sk_*` you used was revoked. Mint a new one in the dashboard. |
+
+Every error class — including the eight others — is documented in [Errors](/docs/concepts/errors), with a Python / TypeScript / Swift catch example per class.
+
+---
+
+## What you just built
+
+A tool that talks to Notion (or any OAuth provider Vendo brokers) with one declaration in `vendo.yaml`, one SDK call, and one error class to catch. The same code reads `NOTION_TOKEN` from `.env` in OSS mode and a transparently-refreshed OAuth token in Vendo mode. The OAuth dance, the refresh, the binding write, and the env-var injection all happen in the platform layer — you don't pick a code path; the SDK does.
+
+From here:
+
+- **More than one OAuth provider.** Stack them. `integrations:` is a list; add a line per provider and one `vendo.token(slug)` call per place you use them. The wizard auto-groups them into a single Connect step (or split them across steps with [`wizardLayout`](/docs/deploy-and-publish/publish-to-catalog/wizard-layout)).
+- **Webhooks from the provider.** Some integrations (Telegram, Stripe) deliver inbound updates Vendo routes through `hooks.vendo.run`. Different shape — covered separately in [Webhooks](/docs/concepts/webhooks) and the [Verify a webhook recipe](/docs/guides/recipes/verify-webhook).
+- **A provider Vendo doesn't broker yet.** File an integration request with the auth model and env var requirements. Most providers can be added in a day.
+
+For day-to-day operations of the deployed tool — viewing logs, debugging failed deploys, suspending — start at [Operate](/docs/deploy-and-publish/operate).

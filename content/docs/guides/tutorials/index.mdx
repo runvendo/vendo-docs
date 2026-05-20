@@ -3,4 +3,28 @@ title: Tutorials
 description: Sequential, end-to-end walkthroughs for building a tool on Vendo.
 ---
 
-Tutorials take you from an empty directory to a working tool. Each one picks a single concrete example — a Telegram bot, a CRM tool ready for the catalog, an OAuth integration — and walks through the SDK calls, `vendo.yaml` manifest, and deploy steps in order. Seed tutorials are landing in upcoming releases.
+import { Card, Cards } from "fumadocs-ui/components/card";
+
+Tutorials take you from an empty directory (or an existing tool) to a working, deployed result. Each one picks a single concrete shape — a Telegram bot, a CRM ready for the catalog, an OAuth integration — and walks through the SDK calls, `vendo.yaml` manifest, and deploy steps in order.
+
+If you're new to Vendo, start with [What is a tool](/docs/concepts/what-is-a-tool) and [Two modes](/docs/concepts/two-modes) — five minutes of reading saves an hour of debugging later.
+
+<Cards>
+  <Card
+    title="Telegram bot from scratch"
+    description="mkdir to a deployed bot that responds to /start. vendo.yaml, webhook handler, OSS-mode local run, then a managed private deploy with hooks.vendo.run wiring."
+    href="/docs/guides/tutorials/telegram-bot-from-scratch"
+  />
+  <Card
+    title="Ship a CRM tool to the catalog"
+    description="From a working tool to a merged vendo-templates PR and a live catalog listing. Manifest, seed migration, release migration, and the reviewer checklist."
+    href="/docs/guides/tutorials/ship-a-crm-tool-to-the-catalog"
+  />
+  <Card
+    title="Add OAuth integrations"
+    description="Wire Notion, Google Drive, or any OAuth provider into a tool. One vendo.yaml line, one SDK call, both OSS and Vendo modes covered."
+    href="/docs/guides/tutorials/add-oauth-integrations"
+  />
+</Cards>
+
+Looking for shorter, single-task snippets instead? See [Recipes](/docs/guides/recipes).
