@@ -1,0 +1,86 @@
+---
+title: Test mode
+description: How to exercise billing flows against tenants exempt from the credit gate — non-billing test tenants and admins.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Vendo has two categories of tenant that bypass billing checks entirely: **test tenants** (flagged in the database) and **admin users** (Vendo's own staff). Both can deploy a tool, call the proxy, and exercise every flow without spending a credit. This page covers when to use which, how flagging works, and what differs from a real tenant.
+
+## When to use it
+
+Use a test tenant when:
+
+- You're developing a tool and don't want to fund a wallet on every iteration.
+- You're running an end-to-end test suite that needs a working tenant but shouldn't burn real money.
+- You're building integration tests for billing logic itself — you want the wallet to *not* charge so the test stays deterministic.
+
+Do **not** use a test tenant when:
+
+- You're validating that a tenant gets the right `402` at zero balance — test tenants bypass that gate, so you'll never see the failure mode you're trying to test.
+- You're measuring real cost or margin — test calls do not write to the wallet, but they do still emit `usage_events` rows, so the analytics surface still sees them.
+
+## What a test tenant changes
+
+A `test = true` tenant gets these exemptions:
+
+| Surface | Behavior on a test tenant |
+|---|---|
+| `POST /api/deploy` billing gate | Bypassed — no positive-balance requirement. Deploys at $0. |
+| Proxy reserve / settle | Reserve still runs but never blocks (treated as unlimited balance). Settle still records the `usage_events` row but does not deduct from the wallet. |
+| Suspension on zero | Does not happen — the watchdog skips tenants with `test = true`. |
+| Stripe customer requirement | Not enforced — a test tenant can exist without a `stripe_customers` row. |
+| Auto-reload | Not applicable — no card on file is needed. |
+
+Everything else behaves identically: the same KV cache, the same DNS, the same Railway provisioning, the same `app_connection_bindings` resolution. Your tool cannot tell from inside its container whether the tenant is a test tenant — there is no header, no env var, and no SDK helper for "is this real money?". If you genuinely need that distinction in your tool's logic, you're modeling something wrong.
+
+## What an admin user changes
+
+Admin users (`VENDO_ADMIN_USER_IDS` env on the web app) get the same deploy-gate bypass and the same proxy non-billing behavior. The difference is that admin status is a property of the *user*, not the *tenant* — an admin acting in any tenant treats that tenant as billing-exempt for the operation they're driving.
+
+Practically: Vendo staff debugging a tenant's deployment can re-deploy without paying. This is for incident response, not for routine development. Use a test tenant for the latter.
+
+## How to flag a tenant as test
+
+This is a Vendo-side operation, not something tool authors do from `vendo.yaml`. The flag lives on the `tenants` row:
+
+```sql
+update tenants set test = true where id = '<tenant_id>';
+```
+
+Setting it requires database access — i.e. you're running locally against a dev Supabase, or you've asked a Vendo admin to flip it on a staging tenant. There is no self-serve UI for it: if a real tenant could mark themselves `test = true`, they could deploy and run for free, which is exactly what the flag is meant to prevent.
+
+For tool authors who don't have direct DB access, the path is:
+
+1. **Local dev** — use the Vendo dev environment (`infisical run --env dev -- pnpm dev`) which has a pre-seeded test tenant tied to your dev account.
+2. **Staging** — ask the Vendo team to flag your staging tenant. We'll usually do this for tools in active development against `vendo.run`.
+3. **Production** — you can't flag a production tenant as `test`. If you need to validate a tool against production for QA, fund a real wallet with a small amount.
+
+<Callout type="warn">
+  Test tenants are not exempt from Vendo's own usage costs. The upstream provider (OpenAI, Railway, Neon) still charges Vendo for the work. Don't run heavy load tests against a test tenant — coordinate with the Vendo team first.
+</Callout>
+
+## Identifying test tenants from outside
+
+The dashboard renders a small "TEST" badge on a tenant's settings page when `test = true`. The Stripe customer (if one exists) is in test mode, not live mode. Beyond that, there's no public surface for the flag — it's deliberately invisible from the tool's perspective so test runs exercise the same code path as real runs.
+
+## What this means for `marketing.pricing`
+
+The `marketing.pricing` field on your tool's catalog entry (see [Setting your pricing](/docs/pricing-and-revenue/setting-your-pricing)) interacts with test mode the same way it interacts with everything else: it controls the wizard's payment step, not the billing layer. A test tenant launching a `pricing: credits` tool still gets the "Pay" wizard step — the wizard doesn't know about the test flag, only the deploy API does. The tenant can enter $1 to satisfy the wizard, hit Launch, and the deploy API bypasses the wallet check because of the test flag.
+
+This is slightly clunky and we may streamline it later. For now, just know: if a test tenant is hitting the wizard's payment step, they can put in any amount — even a real card test number from Stripe (`4242 4242 4242 4242`) — and proceed.
+
+## Testing the failure modes anyway
+
+Sometimes you specifically want to test "what happens when the wallet runs out". You can't do that on a test tenant — the suspension watchdog skips them. Two options:
+
+1. **Real wallet, tiny amount.** Fund a real tenant with $0.10. Run a few proxy calls. Watch suspension fire when it hits zero.
+2. **Mock the watchdog locally.** The watchdog is a Worker (`workers/credit-watchdog`) — you can run it against a local Supabase with a tenant whose balance you manually set to zero. This is the right path for CI integration tests that need to assert on suspension behavior without spending money.
+
+For most tool authors, option 1 is enough — you only really need to confirm "yes, a 402 surfaces sensibly in my tool's UI" once.
+
+## Related
+
+- [Credits model](/docs/pricing-and-revenue/credits-model) — what the wallet is doing for real tenants.
+- [Setting your pricing](/docs/pricing-and-revenue/setting-your-pricing) — the `marketing.pricing` field that gates the wizard.
+- [Per-call costs](/docs/pricing-and-revenue/per-call-costs) — how a real call gets priced.

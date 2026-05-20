@@ -1,0 +1,110 @@
+---
+title: Setting your pricing
+description: The marketing.pricing field on your catalog entry — what credits vs free actually changes, and the trap of picking the wrong one.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Your tool has exactly one knob that affects pricing: `marketing.pricing` on the catalog entry. It's a single string, with two valid values, and it controls whether the deploy wizard asks the tenant to fund their wallet before launching.
+
+That's the whole knob. Read this page once to know which value to pick and what trap to avoid.
+
+## The field
+
+`marketing` is a JSONB column on the `apps_catalog` table — the same place your tool's name, category, and marketing copy live. In your template manifest (see [Deploy & publish](/docs/deploy-and-publish/publish-to-catalog/manifest)), it's a top-level key:
+
+```yaml
+marketing:
+  pricing: credits
+  replaces: HubSpot, Salesforce
+  monthlyCost: "~$15/mo for a typical workload"
+```
+
+The `pricing` field accepts two values:
+
+| Value | Wizard flow | When to pick it |
+|---|---|---|
+| `credits` (default) | Account → Configure → **Pay** → Launch | Any tool that calls the proxy. |
+| `free` | Account → Configure → Launch | Tools that never call the proxy. |
+
+If you omit `pricing`, the catalog defaults to `credits`. That's the safe default — it just means the wizard runs an extra step.
+
+## What `credits` does
+
+The wizard inserts a "Pay" step between Configure and Launch. The tenant picks an amount, Stripe.js takes their card, and the wallet is funded before `POST /api/deploy` is called. This keeps the deploy gate from 402'ing them at launch time.
+
+This is what you want for any tool that:
+
+- Calls an LLM (OpenRouter, Anthropic, OpenAI, Gemini through the proxy).
+- Calls a TTS or transcription provider (ElevenLabs, AssemblyAI, muapi).
+- Sends Telegram messages (`telegram-proxy.vendo.run`).
+- Talks to any `*-proxy.vendo.run` host.
+- Will be hosted on Vendo's Railway infrastructure (compute billing is metered too, even if your tool calls no third-party APIs).
+
+In other words: almost every tool. If you're in doubt, pick `credits`.
+
+## What `free` does
+
+The wizard skips the payment step entirely. The tenant goes straight from Configure to Launch without funding their wallet.
+
+This is only safe when your tool genuinely never calls the proxy and never runs on Vendo's compute. In practice that means:
+
+- **`downloadable` tools** — desktop binaries running on the tenant's hardware, using the tenant's own API keys via BYOK. No proxy, no Vendo compute.
+- **`npm` tools** — CLIs the tenant installs locally. Same story.
+- **`deployment` tools that are pure stateless utilities** — vanishingly rare. If your tool needs no third-party APIs and no persistent state, ask whether it should be a `downloadable` or `npm` tool instead.
+
+<Callout type="warn">
+  **Trap:** setting `pricing: free` on a tool that calls the proxy does **not** make the calls free. It only hides the wizard's payment step. The tenant lands on a freshly deployed tool with a zero wallet, and the first proxy call returns `402`. The tool author looks like the cause.
+</Callout>
+
+The flag is a wizard hint, not a billing exemption. There is no "free tier" or "subsidized usage" — every metered call is paid for by someone, and if you didn't set up the tenant to pay, the proxy will refuse it.
+
+## How to tell if your tool needs `credits`
+
+If any of these are true, pick `credits`:
+
+1. Your `vendo.yaml` lists at least one `integrations:` entry. (Telegram counts. Notion as `oauth_app_install` does not — it has no proxy subdomain.)
+2. Your tool is `tool_type: deployment` — your container runs on Vendo's Railway and gets metered for compute, even at idle.
+3. You import the SDK and call any `vendo.proxy.*` or `vendo.integrations.*` method.
+
+If none of the above apply, `free` is fine. The most common shape for `free` is a downloadable that uses local resources only — voicebox, openscreen.
+
+## How to set it
+
+The catalog entry is your template manifest. Phase 7 (Deploy & publish) covers the full manifest; the pricing field is a single line:
+
+```yaml
+# template.yaml in the vendo-templates repo
+name: my-tool
+marketing:
+  pricing: credits
+```
+
+When the templates sync action runs, it upserts `apps_catalog.marketing` with this JSON. You can also flip it later — admins can update a catalog entry without a new release. But if your tool's billing surface changes (e.g. you add an integration that calls a proxy provider), update the manifest in the same PR and ship a new release.
+
+## What you cannot configure
+
+To pre-empt the obvious follow-up questions:
+
+- **You cannot set a per-call price.** Rates are managed by Vendo, sourced from the upstream provider, and refreshed by a cron. See [Per-call costs](/docs/pricing-and-revenue/per-call-costs).
+- **You cannot set a margin.** Margin is a Vendo-side configuration in `margin_rules`, resolved per-call. The global default is 20%. You don't see this directly; it's folded into the price a tenant pays.
+- **You cannot set a flat monthly fee.** Vendo's model is strictly pay-as-you-go. Tools that want a subscription should run as OSS (BYOK) or as a `downloadable` with their own billing.
+- **You cannot charge a markup of your own.** A formal revenue-share or paid-tool program is not yet live — see [Revenue share](/docs/pricing-and-revenue/revenue-share). For now, all tool revenue flows to Vendo (covering the upstream cost plus margin), and tool authors are not paid per-deployment.
+
+The lever you have is which integrations your tool uses and how efficiently it uses them. A tool that batches LLM calls intelligently costs the tenant less and is more likely to keep them around.
+
+## Display copy
+
+The `marketing` JSONB has companion fields the dashboard uses to communicate cost to tenants before they install:
+
+```yaml
+marketing:
+  pricing: credits
+  monthlyCost: "$15-25/mo for typical solo use"
+  payAsYouGo: true
+  theyCharge: "free (you pay proxied LLM costs)"
+  replaces: "Notion AI, ChatGPT Plus"
+  savings: "$20/mo"
+```
+
+These are display strings — tenants see them on the tool's catalog card and detail page. They don't affect billing. Be honest about cost ranges; over-promising "cheap" and watching tenants get sticker-shock after their first heavy day burns trust faster than anything else.

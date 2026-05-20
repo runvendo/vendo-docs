@@ -1,4 +1,11 @@
 {
   "title": "Pricing & revenue",
-  "pages": ["index"]
+  "pages": [
+    "index",
+    "credits-model",
+    "setting-your-pricing",
+    "per-call-costs",
+    "revenue-share",
+    "test-mode"
+  ]
 }
