@@ -1,0 +1,10 @@
+{
+  "title": "Operate",
+  "pages": [
+    "index",
+    "logs-and-debugging",
+    "updating-a-tool",
+    "suspend-resume",
+    "teardown"
+  ]
+}

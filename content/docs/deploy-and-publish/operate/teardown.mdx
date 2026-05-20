@@ -1,0 +1,86 @@
+---
+title: Teardown
+description: Destroying a deployment — what disappears, what's irreversible, and when this is actually the right move.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Teardown is the destructive operation. The Railway project is deleted, the Neon branch is dropped, the R2 bucket is emptied, the Cloudflare Worker Custom Domain is removed, KV mappings are wiped, and the deployment row is marked `destroyed`. Tenants lose every piece of data the tool produced. There is no undo.
+
+This is rarely the right answer while debugging a problem. Suspend instead, fix the issue, and resume. Reach for teardown when the deployment is genuinely meant to end.
+
+<Callout type="warn">
+Teardown is irreversible. There is no soft-delete, no recovery window, no backups outside what your tool's storage providers retain by their own policy. Tell tenants exactly what disappears before they confirm.
+</Callout>
+
+## What teardown destroys
+
+| Resource | Destroyed by teardown |
+|---|---|
+| Railway project (compute, services, volumes) | Yes |
+| Neon Postgres branch (schema + data) | Yes |
+| R2 bucket and contents | Yes |
+| Cloudflare Worker Custom Domain | Yes |
+| KV mapping `deploy:{subdomain}` | Yes |
+| `vendo_api_key` (proxy key) | Yes (revoked + KV key wiped) |
+| `app_connection_bindings` for this deployment | Yes |
+| `deployment_env_vars` | Yes |
+| `deployment_credentials` | Yes |
+| `deploy_logs` | Yes |
+| `deployments` row | No — flipped to `status='destroyed'`, retained for audit |
+| `apps` row | No — retained (links tenant ↔ tool history) |
+| `usage_events` | No — retained for billing history |
+
+## What survives
+
+- **Audit data** — `deployments`, `apps`, `usage_events` rows are retained. This is for billing and support, not for recovery.
+- **Other deployments of the same tool.** Teardown is scoped to one deployment row. The same tenant deploying the same tool again is a fresh row with fresh state.
+- **The tool's catalog entry.** Tearing down a tenant's instance has zero effect on the catalog.
+
+## Who can trigger it
+
+- **Tenant** — dashboard "Destroy" button. Confirmation dialog with a typed-confirmation field.
+- **Suspension reaper** — automatic after 90 days suspended (see [Suspend & resume](/docs/deploy-and-publish/operate/suspend-resume)).
+- **Internal teardown via support** — for stuck deployments where the workflow can't recover.
+
+Tool authors don't tear down tenant deployments. Even with admin access on the catalog entry, teardown is a tenant action.
+
+## The workflow
+
+`TeardownWorkflow` ([`cloudflare/deploy-worker/src/workflows/teardown.ts`](https://github.com/runvendo/vendo/blob/main/cloudflare/deploy-worker/src/workflows/teardown.ts)) runs idempotent phases:
+
+1. `teardown_compute` — `projectDelete` on Railway (or equivalent on other providers).
+2. `teardown_database` — drop the Neon branch.
+3. `teardown_r2` — empty + delete the bucket.
+4. `teardown_domain` — remove the Worker Custom Domain, wipe the KV entry.
+5. `revoke_proxy_key` — invalidate `vendo_api_key`.
+6. `finalize` — `status='destroyed'`, `destroyed_at=now()`.
+
+Each phase checks current state before acting — re-running the workflow on a partially-destroyed deployment is safe.
+
+<Callout type="warn">
+Railway's `projectDelete` is the one phase that re-throws on failure (other providers swallow). The reason: orphaned Railway projects keep accruing charges. If teardown fails at `teardown_compute`, verify the Railway project still exists, delete it manually, and retry the teardown.
+</Callout>
+
+## Edge cases
+
+- **Teardown on a `failed` deploy that never recorded a `projectId`.** The workflow short-circuits cleanly because `deploy_compute` guards against `projectDelete(undefined)`. No manual cleanup needed.
+- **Teardown on `suspended`.** Works the same way. The compute is already paused, but the workflow still calls `projectDelete` to fully release resources.
+- **Teardown during an in-flight upgrade.** The upgrade is preempted. If the image swap completed but the readiness check was still polling, the teardown drops the now-running new revision along with everything else.
+
+## What tenants see
+
+After teardown:
+
+- The URL `{deployment_slug}.{tenant_slug}.vendo.run` returns NXDOMAIN within minutes (CF DNS propagation).
+- The deployment row hides from the dashboard's default Apps view (filter `status != 'destroyed'`).
+- The dashboard's history view still shows the row with a "Destroyed" badge for audit.
+
+## When teardown is the right move
+
+- The tenant is decommissioning the workload permanently.
+- They want to re-deploy from scratch with a different `deployment_slug`.
+- A `failed` deployment can't be retried (rare — almost always retry first).
+- A `resume_failed` deployment is permanently broken (rare — retry first, escalate to support before tearing down).
+
+In every other case, prefer **suspend** (free) or **restart** (cheap, lossless).

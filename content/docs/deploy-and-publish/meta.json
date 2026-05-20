@@ -1,4 +1,4 @@
 {
   "title": "Deploy & publish",
-  "pages": ["index"]
+  "pages": ["index", "local-oss", "private-deploy", "publish-to-catalog", "operate"]
 }

@@ -1,0 +1,97 @@
+---
+title: Suspend & resume
+description: What suspended state means, when it happens, how to recover, and what gets reaped.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+A suspended deployment is paused — compute is off, the database compute is paused, the URL serves a status page — but every piece of state is preserved. Resume puts it back. After 90 days suspended without a resume, the deployment is destroyed.
+
+## Status transitions
+
+```
+running ─→ suspending ─→ suspended ─→ resuming ─→ running
+                                  └─→ resume_failed
+suspended ── 90 days ──→ destroyed
+```
+
+The transition states (`suspending`, `resuming`, `resume_failed`) exist so the dashboard can show progress and so workflows can recover from mid-transition crashes idempotently.
+
+## What suspend does
+
+The `SuspendWorkflow` calls each compute provider's `suspend()`:
+
+- **Railway** — `deploymentRemove` (the actual deployment, not `numReplicas=0`). The Railway project, services, env vars, volumes, and template are preserved; only the running deployment instance is removed.
+- **Neon Postgres** — `suspend_compute`. The branch is preserved; the compute is paused so it stops accruing charges.
+- **Cloudflare KV** — the `deploy:{subdomain}` entry is updated to `status='suspended'`, so the app proxy serves a status page instead of routing.
+- **App proxy** — flips to status-page mode immediately.
+
+Suspended deployments do not accrue compute charges. The credit balance keeps for the next resume.
+
+## What suspend doesn't do
+
+- **R2 buckets** — preserved entirely.
+- **Railway volumes** — preserved entirely.
+- **Connection bindings** (`app_connection_bindings`) — preserved. The same provider connections are wired up on resume.
+- **Encrypted credentials** (`deployment_credentials`) — preserved.
+- **Generated secrets** in `deployment_env_vars` — preserved.
+- **Tenant's edited `kind='user'` env vars** — preserved.
+
+The whole point of suspend is that resume is a fast, lossless return to running.
+
+## When deployments get suspended
+
+Three paths:
+
+1. **Tenant-initiated** — dashboard Suspend button. The most common.
+2. **Credit-watchdog cron** — when a tenant's wallet hits zero and they haven't topped up. The cron flips affected deployments to `suspending`. Resume requires a topped-up balance.
+3. **Suspension-reaper cron** — moves `suspended` deployments older than 90 days to `destroying`, with warning emails at 83 and 89 days.
+
+Tool authors don't suspend tenants directly. Suspend is a tenant action or a billing action, never a tool-author action.
+
+## What resume does
+
+`ResumeWorkflow` is the mirror:
+
+1. `serviceInstanceRedeploy` on each Railway service. This reuses the preserved service config + env vars — no new image fetch unless it was never deployed.
+2. Unpauses the Neon branch.
+3. Re-runs the readiness check.
+4. Flips KV back to `status='running'`.
+5. Sets the deployment row to `running`.
+
+If `serviceInstanceRedeploy` fails (e.g. Railway is sad, or the image you reference was deleted from the registry), the deployment lands in `resume_failed`. The dashboard surfaces a retry button.
+
+<Callout>
+Resume reuses the preserved config — there's no "undeploy/redeploy" gap. Tenants get back the same running state, same env vars, same connections, same data. If they edited env vars while suspended (the dashboard allows this), those edits are applied on resume.
+</Callout>
+
+## `resume_failed`
+
+A `resume_failed` deployment is the only "stuck" state that needs operator attention:
+
+- The data is still safe — Neon, R2, volumes all preserved.
+- The compute side failed to come back up.
+
+Recovery is `POST /resume` again (same endpoint as the original resume). The workflow is idempotent. If a specific upstream is the issue (Railway capacity, image tag missing), fix the upstream and retry.
+
+## The 90-day reaper
+
+`suspension-reaper` is a daily cron that runs the following query and processes each match:
+
+```sql
+SELECT id FROM deployments
+WHERE status = 'suspended'
+  AND suspended_at < now() - interval '90 days';
+```
+
+Each match goes through `TeardownWorkflow` (described in [Teardown](/docs/deploy-and-publish/operate/teardown)). The Postgres data is dropped, R2 is emptied, the Railway project is destroyed. Tenants receive warning emails on day 83 and day 89.
+
+This is the only path by which a suspended deployment is permanently lost. If a tenant intends to come back to a tool, they need to resume (even briefly) inside the 90-day window.
+
+## What this means for tool authors
+
+- **State must live in a preserved store.** Postgres, R2, volumes, KV. Anything in `/tmp` or in-memory Redis without AOF/RDB is gone on suspend.
+- **Boot must tolerate cold-start latency.** Resume runs your readiness check after the container comes back up. If your readiness depends on a warm cache, build it lazily, not in a startup probe.
+- **Don't hold long-lived connections to external systems across suspend.** Outgoing connections die when compute pauses. Webhooks fired during suspend are dropped (the app proxy serves the status page, not your handler) — see Vendo's webhook retry semantics in [Concepts → Webhooks](/docs/concepts/webhooks).
+
+Next: [Teardown](/docs/deploy-and-publish/operate/teardown).

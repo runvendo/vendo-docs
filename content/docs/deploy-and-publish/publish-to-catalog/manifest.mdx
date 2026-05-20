@@ -1,0 +1,159 @@
+---
+title: Manifest format
+description: Every field of the template JSON Vendo reads to provision your tool.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The template manifest is a single JSON file (`vendo-templates/<slug>/<version>.json`) that tells the deploy worker exactly what to provision for a tenant: which services, which databases, which integrations, what the wizard looks like, and which env vars get injected into your container at boot.
+
+This page covers the full shape. The authoritative schema is [`manifest.schema.json`](https://github.com/runvendo/vendo/blob/main/cloudflare/deploy-worker/src/schema/manifest.schema.json) — if anything here disagrees, the schema wins.
+
+## Minimum required shape
+
+```jsonc
+{
+  "slug": "my-tool",
+  "name": "My Tool",
+  "version": "1.0.0",
+  "services": [
+    {
+      "name": "web",
+      "role": "web",
+      "image": "ghcr.io/me/my-tool:1.0.0",
+      "port": 3000,
+      "startCommand": "node server.js"
+    }
+  ],
+  "readiness": { "endpoint": "/healthz" },
+  "integrations": []
+}
+```
+
+Required: `slug`, `name`, `version`, `services` (one with `role: "web"`), `readiness`, `integrations` (use `[]` if your tool has none).
+
+## `services`
+
+Each service runs as its own Railway container (or Cloudflare Worker for static frontends).
+
+```jsonc
+{
+  "name": "my-app",
+  "role": "web",            // "web" | "worker" | "cron" | "init"
+  "image": "ghcr.io/org/image:tag",
+  "port": 3000,
+  "startCommand": "yarn start",
+  "env": { "DATABASE_URL": "${database_url}" },
+  "volumes": [{ "mountPath": "/data", "sizeGB": 1 }]
+}
+```
+
+For `cloudflare-workers` compute, replace `image` with `buildArtifact` (R2 path to a pre-built bundle).
+
+## `databases`
+
+```jsonc
+{ "name": "postgres", "type": "postgresql", "provider": "neon",    "region": "aws-us-east-1" }
+{ "name": "cache",    "type": "redis",      "provider": "railway", "image": "redis:7.2" }
+```
+
+Neon Postgres is preserved across suspend/resume. Railway Redis needs AOF/RDB persistence and a mounted volume if data must survive.
+
+## `secrets`
+
+Generated during the `collect_secrets` deploy phase:
+
+```jsonc
+{ "app_secret": { "type": "random_hex", "length": 32 } }
+```
+
+Reference as `${app_secret}` in `services[].env`.
+
+## Env-var placeholders
+
+Use these in `services[].env`; the deploy worker resolves them at `resolve_env`:
+
+| Placeholder | Value |
+|---|---|
+| `${domain}` / `${subdomain}` | FQDN / subdomain part |
+| `${database_url}` / `${database_url_unpooled}` / `${database_host,port,user,password,name}` | Postgres |
+| `${redis_url}` | Redis |
+| `${r2_bucket,endpoint,access_key,secret_key}` | R2 |
+| `${vendo_api_key}` | The deployment's metered proxy key |
+| `${admin_email}` / `${admin_password}` | Admin from the wizard |
+
+## `integrations`
+
+Declares each provider your tool calls. Required — pass `[]` if there are none.
+
+```jsonc
+"integrations": [
+  { "provider": "openrouter" },
+  { "provider": "telegram", "optional": true }
+]
+```
+
+The env vars each provider produces (`OPENROUTER_API_KEY`, `TELEGRAM_BOT_TOKEN`, etc.) are declared **once per provider** in the monorepo at `packages/integrations/<slug>/integration.ts` — not here. When a tenant binds a connection during the wizard, the deploy worker resolves the provider's `connectionEnvVars` registry and writes `kind='integration'` rows into `deployment_env_vars`, which get pushed into Railway as real env vars. Your tool just reads `process.env.TELEGRAM_BOT_TOKEN`.
+
+<Callout type="warn">
+Empty array `[]` and missing field are different things — the schema requires the key. Forgetting it (or a release migration that COALESCEs `requires` from the previous release) silently drops integrations.
+</Callout>
+
+## `userInputs` and `wizardLayout`
+
+`userInputs[]` declares env vars the tenant fills in via the deploy wizard:
+
+```jsonc
+"userInputs": [
+  {
+    "key": "OPENAI_MODEL",
+    "category": "user_required",
+    "label": "Default model",
+    "description": "Used for chat completions",
+    "default": "gpt-4o-mini",
+    "inputType": "text"
+  }
+]
+```
+
+System-managed values (DB URLs, generated secrets, deploy-context built-ins, connection-derived static tokens) are NOT in `userInputs[]` — they're declared directly in `services[].env` as `${...}` placeholders. The deploy worker persists the resolving key→value pairs into `deployment_env_vars` as `kind='system'` rows.
+
+`wizardLayout` controls the multi-step wizard UX — covered in [Wizard layout](/docs/deploy-and-publish/publish-to-catalog/wizard-layout).
+
+## `readiness`
+
+```jsonc
+"readiness": { "endpoint": "/healthz", "timeoutSeconds": 300 }
+```
+
+The deploy worker polls this endpoint after compute is up. A non-2xx response fails the `health_check_done` phase and marks the deployment `failed`. See [Healthchecks](/docs/infrastructure) for the contract details.
+
+## `adminBootstrap`
+
+If your tool needs an initial admin user seeded:
+
+```jsonc
+{
+  "authMode": "api_seed",   // "api_seed" | "manual_setup" | "no_auth"
+  "seedEndpoint": "/api/seed",
+  "payloadTemplate": { "email": "${admin_email}", "password": "${admin_password}" }
+}
+```
+
+`apps_catalog.auth_mode` must agree with `adminBootstrap.authMode` — disagreement causes wizard rendering bugs.
+
+## `deployHooks`
+
+For webhook routing — e.g. registering a Telegram bot's webhook URL after deploy:
+
+```jsonc
+"deployHooks": {
+  "afterDeploy": [
+    { "kind": "telegram_set_webhook", "path": "/telegram/webhook" }
+  ]
+}
+```
+
+The hook stamps `https://hooks.vendo.run/<connection_external_id>` into the upstream provider.
+
+Next: [Wizard layout](/docs/deploy-and-publish/publish-to-catalog/wizard-layout).

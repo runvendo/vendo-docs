@@ -1,0 +1,71 @@
+---
+title: Private deploy
+description: Run a fully managed deployment of your tool that only you (and people you invite) can use — without listing it in the public catalog.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+A **private deploy** is the same managed infrastructure tenants get from the public catalog — Railway-hosted compute, a `*.vendo.run` subdomain, the metered proxy, OAuth-refreshed credentials, suspend/resume, the dashboard — only your catalog entry is hidden from everyone else. It's the right shape for an internal tool, an unreleased product, or a paid client engagement where you don't want random users finding the listing.
+
+## How privacy actually works
+
+A tool's visibility is controlled by `apps_catalog.marketing.internal`. Set it to `true` and the catalog query filters the tool out of every public surface — the homepage, search, the integrations grid — while leaving deploys, the dashboard, the proxy, and billing fully functional.
+
+Internal entries are reachable in two ways:
+
+1. **Direct URL.** `/tools/{slug}` still resolves for anyone who knows the slug.
+2. **Admin or owner.** Vendo accounts with admin access (or your own account if you authored the catalog entry) see internal tools in their dashboard.
+
+Use this for staff-only tooling, a beta you're sharing with a single customer, or anything you want to operate on Vendo before it's ready for a public listing.
+
+## Two paths to a private deploy
+
+### Path A — internal-flagged catalog entry
+
+The full publishing flow ([Publish to the catalog](/docs/deploy-and-publish/publish-to-catalog)) with one change: in the DB seed migration that inserts the row, set `marketing.internal = true`. Everything else is identical — same `vendo-templates` submission, same `tool_releases` versioning, same wizard, same rollout behavior.
+
+This is the right path when:
+
+- The tool will eventually go public (you want the same publishing infrastructure now).
+- More than one person needs to deploy it.
+- You want a wizard, integrations, healthchecks, and the rest of the managed feature set.
+
+### Path B — one-off Railway project
+
+If the tool will never be listed and you just need a managed instance, you can short-circuit the catalog entirely and run it as a one-off Railway project. You lose the wizard, the integrations binding flow, and the upgrade path, but you keep the subdomain, the metered proxy (by issuing a `vendo_sk_*` key manually), and dashboard visibility.
+
+This path is rare. Prefer Path A unless you have a specific reason — Path B exists mainly for migrations and experiments that pre-date the templates pipeline.
+
+## Minimum manifest for a private listing
+
+A private-deploy template is the same JSON file as any catalog template ([Manifest format](/docs/deploy-and-publish/publish-to-catalog/manifest)). The only differences are the seed migration that creates the row:
+
+```sql
+-- supabase/migrations/NNN_my_tool.sql
+INSERT INTO apps_catalog (slug, name, tool_type, auth_mode, category, marketing, enabled)
+VALUES (
+  'my-tool',
+  'My Tool',
+  'deployment',
+  'password',
+  'productivity',
+  '{ "internal": true, "pricing": "credits" }'::jsonb,
+  true
+);
+```
+
+…and the absence of marketing copy. Internal tools skip the `replaces` / `savings` / `monthlyCost` block — those fields only render on the public catalog card.
+
+## Deploying it
+
+Once the seed migration is applied and a `tool_releases` row exists, deploy the tool from the dashboard the same way a tenant would. The wizard, the integrations step, the billing check, and the deploy worker all run exactly as for a public tool.
+
+## Going public later
+
+Flip `marketing.internal` to `false` in a follow-up migration, add the marketing copy, and the tool starts appearing in catalog listings on the next read. Existing deployments are unaffected — they keep running on whatever release they were deployed against.
+
+<Callout type="warn">
+Don't toggle `internal` directly in production via the database. Always do it through a migration so the change is reviewed and reversible.
+</Callout>
+
+Next: [Publish to the catalog](/docs/deploy-and-publish/publish-to-catalog) for the full submission flow.

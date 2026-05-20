@@ -1,0 +1,93 @@
+---
+title: Updating a tool
+description: Shipping a new version to deployed tenants — what changes, what doesn't, and how upgrades are sequenced.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+A "update" can mean four different things depending on what changed. Each maps to a different Vendo workflow:
+
+| You changed | The operation is | Triggered by |
+|---|---|---|
+| The image (new code, no manifest change) | Restart (with new image tag) | Cut a new release, then upgrade |
+| The manifest (env vars, integrations, wizard) | Upgrade | Cut a new release, then upgrade |
+| User-editable env vars (`kind='user'` rows) | Restart | Edit + click Restart |
+| Nothing — just want a fresh boot | Restart | Dashboard button |
+
+This page covers shipping a new version to tenants. For the publishing pipeline that produces the new version, see [Versioning & releases](/docs/deploy-and-publish/publish-to-catalog/versioning-and-releases).
+
+## Cutting a release
+
+The full flow lives in [Versioning & releases](/docs/deploy-and-publish/publish-to-catalog/versioning-and-releases) — push a new manifest file to `vendo-templates`, write a release migration that marks the old row inactive and inserts a new active row, run `supabase db push`.
+
+After the migration applies, new deploys get the new version. Existing deploys keep running on their pinned snapshot until upgraded.
+
+## The upgrade workflow
+
+`POST /api/deployments/[id]/upgrade` triggers `UpgradeWorkflow` in the deploy worker. The workflow:
+
+1. Fetches the new active release manifest.
+2. Re-resolves env vars (so new placeholders or new integration bindings get picked up).
+3. Calls `serviceInstanceUpdate({ source: { image } })` on each Railway service to change the image tag.
+4. Redeploys each service.
+5. Polls the readiness endpoint.
+6. On success, snaps `deployments.manifest` to the new version and advances `tool_release_id`.
+
+<Callout type="warn">
+Step 3 is the load-bearing one. If you forget to bump the image tag (e.g. you re-cut `1.0.0` with new code instead of releasing `1.0.1`), Railway redeploys against the same image SHA and nothing changes.
+</Callout>
+
+## Tenant-initiated upgrade
+
+The dashboard shows an "Update available" banner on any deployment whose `tool_release_id` is older than the current active release. The tenant clicks Update, the workflow runs, and on success their deployment is on the new version. Failures show in `deploy_logs` and the deployment goes to `failed` — they can retry, or roll back via support.
+
+This is the path you want by default. Tenants control when their workload updates.
+
+## Author-initiated upgrade (mass rollout)
+
+For a security patch or a bug fix that should reach every tenant:
+
+1. Cut the new release.
+2. Query for deployments still pinned to old versions (see [Rollout & upgrades](/docs/deploy-and-publish/publish-to-catalog/rollout-and-upgrades)).
+3. Script the per-deployment upgrade calls. Rate-limit; you don't want every tenant of your tool redeploying simultaneously.
+
+There's no automatic background upgrade. Vendo treats running deployments as the tenant's workload — silently changing the running version would be a trust break.
+
+## What survives an upgrade
+
+| Resource | Survives upgrade |
+|---|---|
+| Neon Postgres | Yes |
+| R2 bucket | Yes |
+| Railway volumes | Yes |
+| Cloudflare KV mappings | Yes |
+| Tenant's `kind='user'` env var edits | Yes |
+| `vendo_api_key` (proxy key) | Yes (same key, new image) |
+| In-container filesystem outside a volume | No — image is replaced |
+| In-memory Redis without persistence | No |
+
+If your release adds a database column or migrates schema, your container's startup must run the migration before the readiness endpoint reports healthy. The readiness check is your serialization point.
+
+## Env-var changes across versions
+
+Two patterns:
+
+- **Renaming a user-required env var.** Tenants need to re-enter the value. Add the new key to `userInputs[]` and remove the old; existing deployments will pick up `NULL` for the new key until the tenant edits + restarts. Surface this clearly in your release notes.
+- **Renaming an integration-derived env var.** Avoid. The env var name comes from the provider's `connectionEnvVars` registry, not your manifest. If you must change it, coordinate with Vendo to update the registry; otherwise old deployments will keep the old env var name in `deployment_env_vars` until an upgrade re-resolves.
+
+## Rolling back
+
+Cut a new release pointing at the previous manifest version, then upgrade. Old manifest versions stay in R2; old image tags stay wherever you publish them. If you garbage-collected the old image tag, rollback fails — keep at least the most recent N tags retained in your registry.
+
+Tenant-initiated rollback isn't exposed in the UI. Roll back via support if you need to undo a release that's already in production.
+
+## Restart without upgrade
+
+Sometimes you don't need a new version — you just need a fresh boot (env var changed, transient crash loop, etc.):
+
+- **Dashboard → Restart.** Pushes every `deployment_env_vars` row into Railway, redeploys each service, re-runs the readiness check, flips the row back to `running`.
+- **Atomic.** Status transitions `running` → `restarting` → `running`. A concurrent restart returns 409.
+
+Restart is the right tool when the image is fine but the runtime state isn't.
+
+Next: [Suspend & resume](/docs/deploy-and-publish/operate/suspend-resume).

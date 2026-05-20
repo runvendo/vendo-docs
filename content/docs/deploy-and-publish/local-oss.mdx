@@ -1,0 +1,70 @@
+---
+title: Run locally as OSS
+description: Run your tool as plain open-source with your own API keys — no Vendo account, no proxy, no billing.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Every Vendo tool is also a plain OSS app. With `VENDO_API_KEY` unset, the SDK falls through to conventional environment variables and your tool runs exactly like any other self-hosted project. This is the right starting point while you're iterating on the code itself — no account, no managed infrastructure, no metered proxy.
+
+## When this lane is right
+
+- You're prototyping and don't want to deploy yet.
+- You're a contributor running the tool's repo locally to fix a bug or add a feature.
+- You're running the tool on your own server and providing every credential yourself.
+
+If you want a managed instance for just yourself, jump to [Private deploy](/docs/deploy-and-publish/private-deploy). If you want any tenant to be able to install your tool from the catalog, jump to [Publish to the catalog](/docs/deploy-and-publish/publish-to-catalog).
+
+## Set conventional env vars
+
+The SDK looks for the same env vars upstream providers document. Set whichever your tool actually calls:
+
+```bash
+# .env
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+TELEGRAM_BOT_TOKEN=12345:abcde
+STRIPE_SECRET_KEY=sk_test_...
+```
+
+Do **not** set `VENDO_API_KEY`. Its presence is the only switch between OSS mode and Vendo mode — see [Two modes](/docs/concepts/two-modes).
+
+## Call the SDK normally
+
+```python
+import vendo
+
+openai_key = vendo.token("openai")   # returns OPENAI_API_KEY
+bot_token  = vendo.token("telegram") # returns TELEGRAM_BOT_TOKEN
+```
+
+```typescript
+import { token } from "@vendodev/sdk";
+
+const openaiKey = await token("openai");
+const botToken  = await token("telegram");
+```
+
+`vendo.token(slug)` returns the value of the conventional env var when `VENDO_API_KEY` is absent. The same call returns an OAuth-refreshed managed token once you flip into Vendo mode — your application code never branches on which mode is active.
+
+## Run the tool
+
+Whatever the tool's repo documents — `python main.py`, `npm run dev`, `docker compose up`, etc. There is no Vendo-specific build step in OSS mode. Vendo only enters the picture when `VENDO_API_KEY` is set.
+
+## What you don't get in OSS mode
+
+<Callout type="warn">
+OSS mode skips the entire managed surface. You are on your own for:
+</Callout>
+
+- **Credential storage and rotation.** No `credentials.vendo.run`. Your tool reads env vars; you rotate them by editing `.env`.
+- **Metered third-party calls.** No proxy — requests go straight to OpenAI, Anthropic, Telegram, etc. with your raw keys, billed to whichever provider account those keys belong to.
+- **Per-tenant isolation.** You are the only "tenant." Code paths that read a tenant ID off the request still execute, but there is no second tenant they could resolve to.
+- **Hosted infrastructure.** No subdomain, no TLS, no Cloudflare app proxy, no Railway-hosted compute. The tool runs wherever you start it.
+- **Webhook routing.** `hooks.vendo.run` is part of the managed deployment chain; in OSS mode the tool needs to be publicly reachable on its own (ngrok, your own VPS, etc.).
+
+## Upgrading to Vendo mode
+
+When you're ready for a managed instance, do not edit the code. Set `VENDO_API_KEY` (and, if you've moved off your own machine, deploy the same code through one of the other two lanes). The SDK detects the env var at startup and routes every call through `credentials.vendo.run` and the metered proxy automatically.
+
+Next: [Private deploy](/docs/deploy-and-publish/private-deploy) to ship a managed instance only you can use.

@@ -1,0 +1,12 @@
+{
+  "title": "Publish to the catalog",
+  "pages": [
+    "index",
+    "templates-repo",
+    "manifest",
+    "wizard-layout",
+    "submission",
+    "versioning-and-releases",
+    "rollout-and-upgrades"
+  ]
+}
