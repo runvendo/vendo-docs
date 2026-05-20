@@ -89,22 +89,31 @@ If you call `data.execute` directly without checking `connections.get` first, an
 ```python
 from vendo_sdk.errors import NotConnected
 
-try:
-    result = vendo.data.execute("SUPABASE_BETA_RUN_SQL_QUERY", {...})
-except NotConnected as e:
-    return {"needs_connection": e.slug}
+def query_supabase(ref: str, sql: str):
+    try:
+        return vendo.data.execute(
+            "SUPABASE_BETA_RUN_SQL_QUERY",
+            {"project_id": ref, "query": sql},
+        )
+    except NotConnected as e:
+        return {"needs_connection": e.slug}
 ```
 
 ```typescript
 import { NotConnected } from "@vendodev/sdk";
 
-try {
-  const result = await vendo.data.execute("SUPABASE_BETA_RUN_SQL_QUERY", { ... });
-} catch (e) {
-  if (e instanceof NotConnected) {
-    return { needsConnection: e.slug };
+async function querySupabase(ref: string, sql: string) {
+  try {
+    return await vendo.data.execute(
+      "SUPABASE_BETA_RUN_SQL_QUERY",
+      { project_id: ref, query: sql },
+    );
+  } catch (e) {
+    if (e instanceof NotConnected) {
+      return { needsConnection: e.slug };
+    }
+    throw e;
   }
-  throw e;
 }
 ```
 

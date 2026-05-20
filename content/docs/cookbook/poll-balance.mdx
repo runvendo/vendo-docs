@@ -7,24 +7,26 @@ description: Read the tenant's prepaid credit balance, gate expensive operations
 
 Vendo mode only. Raises `VendoOnlyFeature` in OSS mode — there is no billing backend when running outside Vendo.
 
+Balances are reported in **micros** (1 USD = 1,000,000 micros). Divide by `1_000_000` to render dollars.
+
 ---
 
 ## Read the balance
 
 ```python
-import vendo_sdk as vendo
-from vendo_sdk.errors import VendoOnlyFeature
+import vendo
+from vendo.errors import VendoOnlyFeature
 
 def get_balance():
     try:
         balance = vendo.billing.balance()
         return {
-            "available_usd": balance.available_usd,
-            "pending_usd": balance.pending_usd,
+            "credits_remaining_usd": balance.credits_remaining_micros / 1_000_000,
+            "currency": balance.currency,
+            "top_up_url": balance.top_up_url,
         }
     except VendoOnlyFeature:
-        # Running outside Vendo (local dev, OSS self-host)
-        return {"available_usd": None, "message": "billing not available in OSS mode"}
+        return {"credits_remaining_usd": None, "message": "billing not available in OSS mode"}
 ```
 
 ```typescript
@@ -36,12 +38,13 @@ async function getBalance() {
   try {
     const balance = await vendo.billing.balance();
     return {
-      availableUsd: balance.availableUsd,
-      pendingUsd: balance.pendingUsd,
+      creditsRemainingUsd: balance.creditsRemainingMicros / 1_000_000,
+      currency: balance.currency,
+      topUpUrl: balance.topUpUrl,
     };
   } catch (e) {
     if (e instanceof VendoOnlyFeature) {
-      return { availableUsd: null, message: "billing not available in OSS mode" };
+      return { creditsRemainingUsd: null, message: "billing not available in OSS mode" };
     }
     throw e;
   }
@@ -53,34 +56,36 @@ async function getBalance() {
 ## Gate a feature on available balance
 
 ```python
-MIN_BALANCE_USD = 0.50
+MIN_BALANCE_MICROS = 500_000  # $0.50
 
-def run_expensive_action():
+def run_expensive_action(client):
     try:
         balance = vendo.billing.balance()
     except VendoOnlyFeature:
         balance = None
 
-    if balance is not None and balance.available_usd < MIN_BALANCE_USD:
-        return {"error": "insufficient_balance", "available_usd": balance.available_usd}
+    if balance is not None and balance.credits_remaining_micros < MIN_BALANCE_MICROS:
+        return {"error": "insufficient_balance", "credits_remaining_micros": balance.credits_remaining_micros}
 
-    # Proceed with the action
-    return vendo.data.execute("SOME_EXPENSIVE_ACTION", {})
+    return client.data.execute("SOME_EXPENSIVE_ACTION", {})
 ```
 
 ```typescript
-const MIN_BALANCE_USD = 0.50;
+const MIN_BALANCE_MICROS = 500_000; // $0.50
 
 async function runExpensiveAction() {
-  let balance = null;
+  let balance: Awaited<ReturnType<typeof vendo.billing.balance>> | null = null;
   try {
     balance = await vendo.billing.balance();
   } catch (e) {
     if (!(e instanceof VendoOnlyFeature)) throw e;
   }
 
-  if (balance !== null && balance.availableUsd < MIN_BALANCE_USD) {
-    return { error: "insufficient_balance", availableUsd: balance.availableUsd };
+  if (balance !== null && balance.creditsRemainingMicros < MIN_BALANCE_MICROS) {
+    return {
+      error: "insufficient_balance",
+      creditsRemainingMicros: balance.creditsRemainingMicros,
+    };
   }
 
   return vendo.data.execute("SOME_EXPENSIVE_ACTION", {});
@@ -94,4 +99,4 @@ async function runExpensiveAction() {
 - `balance()` is a live read — it reflects credits after pending charges are applied. Cache it for no longer than 30 seconds if you are polling it in a dashboard.
 - `BalanceExhausted` is raised automatically by the proxy when a metered operation would push the balance below zero. You do not need to check the balance before every `data.execute` call — the proxy enforces it.
 - `SpendCaps` can also block operations before the balance hits zero. Read spend caps with `vendo.billing.spend_caps()`.
-- The billing period is calendar-month UTC. `billing.usage(period="2026-05")` returns the breakdown for May 2026.
+- The billing period is calendar-month UTC. `billing.usage(period="month")` returns the breakdown for the current month.
