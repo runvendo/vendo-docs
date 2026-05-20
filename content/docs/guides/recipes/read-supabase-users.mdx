@@ -124,4 +124,4 @@ async function querySupabase(ref: string, sql: string) {
 - The `ref` field is the Supabase project reference: a short alphanumeric string like `vqxkddreoeebocpisgrn`. It is the same value you see in Supabase dashboard URLs.
 - `SUPABASE_BETA_RUN_SQL_QUERY` is the Composio action name. Check the [Composio Supabase integration](https://composio.dev) for the full list of available actions.
 - `context` is `null` for providers that do not have discovery identifiers (Slack, Stripe, etc.). Supabase and Instagram are the current discovery providers.
-- Inside the customize-sandbox, `connections.get` has a 5s timeout. If your deployment has a slow connection to `VENDO_API_URL`, raise it by setting `VENDO_TIMEOUT_MS`. See [sandbox/gotchas](/docs/sandbox/gotchas).
+- Inside the customize-sandbox, `connections.get` has a 5s timeout. If your deployment has a slow connection to `VENDO_API_URL`, raise it by setting `VENDO_TIMEOUT_MS`. See [sandbox/gotchas](/docs/build-a-tool/sandbox/gotchas).
