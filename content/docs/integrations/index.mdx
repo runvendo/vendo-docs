@@ -1,6 +1,38 @@
 ---
 title: Integrations
-description: Per-provider pages for every integration Vendo brokers — OpenAI, Anthropic, Telegram, Stripe, Notion, and more.
+description: Per-provider pages for every integration Vendo brokers — what it is, which auth modes are supported, env vars exposed at runtime, proxy endpoint, and code examples.
 ---
 
-Each integration page covers what the integration is, which auth modes are supported (BYOK / OAuth / shared), how to declare it in `vendo.yaml`, what env vars are exposed at runtime, the proxy endpoint, per-call cost mechanics, and code examples in Python, TypeScript, and Swift.
+import { Card, Cards } from "fumadocs-ui/components/card";
+
+Vendo brokers OAuth flows, BYOK credentials, and shared upstream keys for the providers below. Pick one to see its auth profiles, the env vars Vendo injects at boot, the proxy endpoint (when applicable), and a `vendo.token(...)` snippet in Python / TypeScript / Swift.
+
+For the platform-wide picture — how connections, bindings, and the proxy interact — see [Concepts: connections & integrations](/docs/concepts) and [Infrastructure: the proxy](/docs/infrastructure).
+
+## Available providers
+
+The list below is auto-generated from the `integrations` table (enabled rows only). Every link points to a generated per-provider page; the prose on each page is hand-written.
+
+{/* LIST-START — replaced by scripts/build-integrations.mjs */}
+<Cards>
+  <Card title="Anthropic" description="Claude API for chat, analysis, and code generation" href="/docs/integrations/anthropic" />
+  <Card title="AssemblyAI" description="Audio transcription & analysis via AssemblyAI" href="/docs/integrations/assemblyai" />
+  <Card title="ElevenLabs" description="AI voice generation & cloning via ElevenLabs" href="/docs/integrations/elevenlabs" />
+  <Card title="Google Gemini" description="Google Gemini models for chat and multimodal AI" href="/docs/integrations/gemini" />
+  <Card title="Instagram" description="Publish posts, read comments, and view analytics on Instagram" href="/docs/integrations/instagram" />
+  <Card title="MuAPI" description="Image, video, and audio generation via MuAPI" href="/docs/integrations/muapi" />
+  <Card title="Notion" description="Read & write Notion pages and databases" href="/docs/integrations/notion" />
+  <Card title="OpenAI" description="Chat completions, embeddings, image generation, and audio" href="/docs/integrations/openai" />
+  <Card title="OpenRouter" description="Multi-model AI via OpenRouter" href="/docs/integrations/openrouter" />
+  <Card title="Supabase" description="Manage Supabase projects (admin)" href="/docs/integrations/supabase" />
+  <Card title="Telegram" description="Connect a Telegram bot to receive messages" href="/docs/integrations/telegram" />
+</Cards>
+{/* LIST-END */}
+
+## How a provider gets here
+
+Each enabled row in `integrations` ships with one or more **auth profiles** — `vendo_managed_pool` (Vendo holds the key), `byok_static` (you upload yours), `oauth_app_install` / `oauth2` (per-user OAuth), or `composio_managed` (brokered through Composio). The per-provider page lists which profiles are wired up and which one is the default.
+
+## Adding a new integration
+
+Integrations come from the monorepo's `packages/integrations/<slug>/` modules. To propose a new one, open an issue on [`runvendo/vendo`](https://github.com/runvendo/vendo) with: provider name, what tools would consume it, and which auth profiles the provider supports.
