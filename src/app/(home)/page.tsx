@@ -73,12 +73,14 @@ export default function HomePage() {
       {/* Nav */}
       <nav className="border-b border-[#E5E5E0] dark:border-[#1E2420] px-6 py-4 flex items-center justify-between max-w-6xl mx-auto">
         <Link href="/" className="flex items-center gap-2 group">
-          <span
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-white text-sm font-bold"
-            style={{ backgroundColor: BRAND }}
-          >
-            V
-          </span>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/logo-small.png"
+            alt="Vendo"
+            width={28}
+            height={28}
+            className="h-7 w-auto"
+          />
           <span className="font-semibold tracking-tight">Vendo Docs</span>
         </Link>
         <div className="flex items-center gap-6 text-sm text-[#6B6B60] dark:text-[#9A9A8E]">
@@ -198,12 +200,14 @@ export default function HomePage() {
         <div className="max-w-6xl mx-auto flex flex-wrap gap-8 justify-between items-start">
           <div>
             <div className="flex items-center gap-2 mb-2">
-              <span
-                className="w-6 h-6 rounded-md flex items-center justify-center text-white text-xs font-bold"
-                style={{ backgroundColor: BRAND }}
-              >
-                V
-              </span>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/logo-small.png"
+                alt="Vendo"
+                width={24}
+                height={24}
+                className="h-6 w-auto"
+              />
               <span className="font-semibold text-sm">Vendo Docs</span>
             </div>
             <p className="text-xs text-[#9A9A8E] dark:text-[#6B6B60] max-w-xs leading-relaxed">

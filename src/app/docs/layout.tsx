@@ -7,7 +7,19 @@ export default function Layout({ children }: { children: ReactNode }) {
     <DocsLayout
       tree={source.pageTree}
       nav={{
-        title: "Vendo SDKs",
+        title: (
+          <span className="flex items-center gap-2">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/logo-small.png"
+              alt="Vendo"
+              width={24}
+              height={24}
+              className="h-6 w-auto"
+            />
+            <span className="font-semibold tracking-tight">Vendo Docs</span>
+          </span>
+        ),
         url: "/",
       }}
     >
