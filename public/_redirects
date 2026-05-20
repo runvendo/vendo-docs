@@ -1,0 +1,16 @@
+# Cloudflare Pages redirects for the IA overhaul (Phase 1).
+# Next.js redirects() in next.config.ts is unsupported with output: "export";
+# CF Pages reads this file from the deploy root.
+# Syntax: <source> <destination> <status>. First match wins.
+
+/docs/cookbook /docs/guides/recipes 308
+/docs/cookbook/ /docs/guides/recipes 308
+/docs/cookbook/* /docs/guides/recipes/:splat 308
+
+/docs/sandbox /docs/build-a-tool/sandbox 308
+/docs/sandbox/ /docs/build-a-tool/sandbox 308
+/docs/sandbox/* /docs/build-a-tool/sandbox/:splat 308
+
+/docs/sdks /docs/reference/sdk 308
+/docs/sdks/ /docs/reference/sdk 308
+/docs/sdks/* /docs/reference/sdk/:splat 308
