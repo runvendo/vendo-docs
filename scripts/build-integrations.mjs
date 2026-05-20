@@ -200,7 +200,28 @@ function envVarsSection(envBootstrap) {
   return md;
 }
 
-function codeExamples(slug, tokenComment) {
+// Auth-mode dispatch.
+//
+// Two canonical SDK paths today:
+//   - `vendo.token(slug)` — Vendo resolves the credential and returns the
+//     value of the env var the upstream SDK expects. Used by everything
+//     that talks to the upstream API directly (or via a Vendo proxy
+//     subdomain): vendo_managed_pool, byok_static, oauth_app_install, oauth2.
+//   - `vendo.data.execute(ACTION, args)` — Vendo brokers the call through
+//     Composio against the tenant's connected account. Used by every
+//     composio_managed provider; tool authors never see the raw credential.
+//
+// `default_profile` is the source of truth for which shape is canonical
+// for this provider. A provider that supports both (uncommon today) still
+// has a single default we render against; the auth-modes table below
+// surfaces the alternatives.
+
+function isComposioManaged(profile) {
+  return profile === "composio_managed";
+}
+
+// Token-based quickstart — used for everything except composio_managed.
+function tokenQuickstart(slug, tokenComment) {
   const varName = slug.replace(/[^a-zA-Z0-9_]/g, "_");
   const py = `import vendo
 
@@ -230,6 +251,76 @@ print(token)`;
   return { py, ts, swift };
 }
 
+// Composio-action quickstart — used for composio_managed providers.
+// We render an example action name in the shape <SLUG_UPPER>_<VERB> to hint
+// at the convention; the real action name list lives at composio.dev. The
+// `args` object is intentionally generic so the page never asserts a
+// schema it can't verify.
+function composioActionQuickstart(slug, providerName) {
+  const actionPlaceholder = `${slug.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_<ACTION>`;
+  const py = `import vendo
+from vendo.errors import NotConnected, UpstreamError
+
+# Vendo brokers the call through Composio against the tenant's connected
+# ${providerName} account. Browse the action catalog at composio.dev for the
+# full list of action names.
+try:
+    result = vendo.data.execute(
+        "${actionPlaceholder}",
+        { /* action-specific arguments — see composio.dev */ },
+    )
+except NotConnected as e:
+    # Tenant hasn't connected ${providerName} — send them through the connect flow.
+    connect_url = vendo.connect_url(e.slug)
+except UpstreamError as e:
+    # Composio or ${providerName} returned an error.
+    raise`;
+  const ts = `import { Vendo, NotConnected, UpstreamError } from "@vendodev/sdk";
+
+const vendo = new Vendo();
+
+// Vendo brokers the call through Composio against the tenant's connected
+// ${providerName} account. Browse the action catalog at composio.dev for the
+// full list of action names.
+try {
+  const result = await vendo.data.execute(
+    "${actionPlaceholder}",
+    { /* action-specific arguments — see composio.dev */ },
+  );
+} catch (e) {
+  if (e instanceof NotConnected) {
+    const connectUrl = vendo.connectUrl(e.slug);
+  } else if (e instanceof UpstreamError) {
+    throw e;
+  }
+}`;
+  const swift = `import VendoSDK
+
+let vendo = Vendo()
+
+// Vendo brokers the call through Composio against the tenant's connected
+// ${providerName} account. Browse the action catalog at composio.dev for the
+// full list of action names.
+do {
+  let result = try await vendo.data.execute(
+    "${actionPlaceholder}",
+    [ /* action-specific arguments — see composio.dev */ ]
+  )
+} catch let error as NotConnected {
+  let connectUrl = vendo.connectUrl(slug: error.slug)
+} catch {
+  throw error
+}`;
+  return { py, ts, swift };
+}
+
+function quickstartFor(defaultProfile, slug, providerName, tokenComment) {
+  if (isComposioManaged(defaultProfile)) {
+    return composioActionQuickstart(slug, providerName);
+  }
+  return tokenQuickstart(slug, tokenComment);
+}
+
 function preserveProse(slug, defaultProse) {
   const path = join(OUT_DIR, `${slug}.mdx`);
   if (!existsSync(path)) return defaultProse;
@@ -251,7 +342,8 @@ function renderFromCatalog(catalog, envBootstrap) {
     catalog.marketing && catalog.marketing.tagline
       ? catalog.marketing.tagline
       : "Returned token is the credential for this provider.";
-  const examples = codeExamples(slug, tokenComment);
+  const examples = quickstartFor(catalog.default_profile, slug, catalog.name, tokenComment);
+  const composio = isComposioManaged(catalog.default_profile);
 
   const proseDefault =
     catalog.marketing && catalog.marketing.about
@@ -271,9 +363,11 @@ function renderFromCatalog(catalog, envBootstrap) {
     .filter(Boolean)
     .join("\n");
 
-  const proxyBlock = proxy
-    ? `## Proxy endpoint\n\nCalls to ${catalog.name} are brokered through Vendo's proxy at:\n\n\`\`\`\n${proxy}\n\`\`\`\n\nPoint the official ${catalog.name} SDK at this base URL; Vendo authenticates, meters per call, and forwards upstream. Your code never sees the upstream credential.\n`
-    : `## Direct API\n\n${catalog.name} is called directly (no Vendo proxy intermediary). The SDK reads the injected credential from the environment and talks to ${catalog.name}'s API host.\n`;
+  const callShapeBlock = composio
+    ? `## Through Composio\n\nCalls to ${catalog.name} are brokered through Vendo's Composio bridge. Your tool issues a \`vendo.data.execute(ACTION, args)\` call; Vendo resolves the tenant's connected ${catalog.name} account, forwards to Composio, meters one \`composio.action_call\` unit, and returns the result. Your code never sees the upstream credential.\n\nSee [Call a Composio Action](/docs/guides/recipes/call-composio-action) for the full pattern, including \`NotConnected\` handling.\n`
+    : proxy
+      ? `## Proxy endpoint\n\nCalls to ${catalog.name} are brokered through Vendo's proxy at:\n\n\`\`\`\n${proxy}\n\`\`\`\n\nPoint the official ${catalog.name} SDK at this base URL; Vendo authenticates, meters per call, and forwards upstream. Your code never sees the upstream credential.\n`
+      : `## Direct API\n\n${catalog.name} is called directly (no Vendo proxy intermediary). The SDK reads the injected credential from the environment and talks to ${catalog.name}'s API host.\n`;
 
   return `${frontmatter}
 
@@ -295,7 +389,7 @@ These are the env vars Vendo injects into your deployment at boot when this inte
 
 ${envVarsSection(envBootstrap)}
 
-${proxyBlock}
+${callShapeBlock}
 ## Quickstart
 
 <Tabs items={["Python", "TypeScript", "Swift"]}>
@@ -319,7 +413,8 @@ ${examples.swift}
 ## Learn more
 
 - [Concepts: connections & integrations](/docs/concepts) — how connections, bindings, and credentials fit together.
-- [Build a tool: SDK](/docs/build-a-tool) — full \`vendo.token\` semantics and resolution.
+- [Build a tool: SDK](/docs/build-a-tool) — full \`vendo.token\` and \`vendo.data.execute\` semantics.
+${composio ? `- [Call a Composio Action](/docs/guides/recipes/call-composio-action) — \`vendo.data.execute\` patterns and error handling.` : ""}
 ${catalog.docs_url ? `- [${catalog.name} API docs](${catalog.docs_url})` : ""}
 `;
 }
@@ -331,8 +426,16 @@ function renderFromDbOnly(row) {
   // yet. Same template but driven entirely off the DB row, with a TODO
   // admonition pointing to the catalog-authoring follow-up.
   const slug = row.provider;
-  const examples = codeExamples(slug, "Returned token is the credential for this provider.");
-  const proseDefault = `${row.name} is wired into Vendo via the Composio bridge. Tool authors connect a tenant's ${row.name} account through Vendo's UI; once connected, the SDK exposes the credential at runtime so your tool can call the ${row.name} API on the tenant's behalf.`;
+  const composio = isComposioManaged(row.default_profile);
+  const examples = quickstartFor(
+    row.default_profile,
+    slug,
+    row.name,
+    "Returned token is the credential for this provider.",
+  );
+  const proseDefault = composio
+    ? `${row.name} is wired into Vendo via the Composio bridge. Tool authors call \`vendo.data.execute(ACTION, args)\`; Vendo resolves the tenant's connected ${row.name} account, forwards to Composio, and returns the result.`
+    : `${row.name} is one of the integrations Vendo brokers. Tool authors bind it to a deployment to get a connection at runtime.`;
   const prose = preserveProse(slug, proseDefault);
 
   const frontmatter = [
@@ -375,10 +478,10 @@ These are the env vars Vendo injects into your deployment at boot when this inte
 
 ${envVarsSection(row.env_bootstrap)}
 
-## Direct API
-
-${row.name} is called directly through the Composio bridge (no dedicated Vendo proxy subdomain). The SDK reads the injected credential from the environment and talks to ${row.name}'s API host.
-
+${composio
+  ? `## Through Composio\n\nCalls to ${row.name} are brokered through Vendo's Composio bridge. Your tool issues a \`vendo.data.execute(ACTION, args)\` call; Vendo resolves the tenant's connected ${row.name} account, forwards to Composio, meters one \`composio.action_call\` unit, and returns the result. Your code never sees the upstream credential.\n\nSee [Call a Composio Action](/docs/guides/recipes/call-composio-action) for the full pattern, including \`NotConnected\` handling.\n`
+  : `## Direct API\n\n${row.name} is called directly (no Vendo proxy intermediary). The SDK reads the injected credential from the environment and talks to ${row.name}'s API host.\n`
+}
 ## Quickstart
 
 <Tabs items={["Python", "TypeScript", "Swift"]}>
@@ -402,7 +505,8 @@ ${examples.swift}
 ## Learn more
 
 - [Concepts: connections & integrations](/docs/concepts) — how connections, bindings, and credentials fit together.
-- [Build a tool: SDK](/docs/build-a-tool) — full \`vendo.token\` semantics and resolution.
+- [Build a tool: SDK](/docs/build-a-tool) — full \`vendo.token\` and \`vendo.data.execute\` semantics.
+${composio ? `- [Call a Composio Action](/docs/guides/recipes/call-composio-action) — \`vendo.data.execute\` patterns and error handling.` : ""}
 `;
 }
 
