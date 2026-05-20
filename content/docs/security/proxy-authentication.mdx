@@ -1,0 +1,73 @@
+---
+title: Proxy authentication
+description: The vendo_sk_* key format, how the proxy authenticates a call, the two key scopes, and what rotation looks like.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Every call your tool makes through Vendo's integration proxy (`*-proxy.vendo.run`) or the credentials worker carries a single bearer: a `vendo_sk_*` key. This page covers what that key is, what it authorises, and how it's rotated.
+
+## The key format
+
+```
+vendo_sk_<random-32-char-base62>
+```
+
+The plaintext is returned exactly once — when the key is first issued — and is never persisted in cleartext anywhere in Vendo's infrastructure. What is stored is the SHA-256 hash of the plaintext. At request time, the proxy hashes the bearer it received and looks the hash up to find the key's metadata. A stolen key cannot be re-derived from any database row.
+
+There is no way to retrieve a key after issuance. Lost keys are revoked and replaced; not recovered.
+
+## Authentication on every request
+
+The proxy authenticates each request before doing anything else. In order:
+
+1. Pull the bearer from the `Authorization` header. If it isn't `vendo_sk_*`, reject immediately.
+2. Hash it; look up the record. Missing → 401.
+3. Check the record's status: revoked → 401, expired → 401.
+4. Resolve the call's tenant from the record. From this point on, the request is bound to that tenant — no header from the caller can change which tenant it bills, which bindings it sees, or which connections it reaches.
+5. Resolve which connection answers the call (described below), then forward.
+
+The hash → record lookup runs against a fast in-memory cache; cache misses fall back to a database read. There is no path that bypasses the lookup; every call is authenticated.
+
+## Two key scopes
+
+A `vendo_sk_*` key carries one of two scopes:
+
+**Connection key.** Locked to a single connection for a single provider. Useful for scripts or one-off tools that talk to exactly one integration. The proxy answers calls only for that connection's provider; calls to other proxy subdomains return 403.
+
+**App key.** Tied to a deployment (one `apps` row), not to a specific connection. At request time the proxy resolves the call's provider against the deployment's bindings (`app_connection_bindings`). With zero bindings for that provider, the request gets 403 (`binding_missing`). With multiple, the caller can disambiguate with an `X-Vendo-Connection` header; the proxy ignores it on connection-scoped keys.
+
+Each deployment is issued exactly one app key at deploy time. That key is the value of `VENDO_API_KEY` (and `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) inside the deployment's environment.
+
+## Tenant binding is not caller-supplied
+
+The proxy derives the tenant from the resolved key record. It does **not** read `X-Vendo-Tenant-Id` (or any other inbound `X-Vendo-*` header) on the proxy hot path. A deployment cannot lie about its tenant by injecting headers — the integration proxy is a separate Worker from the app proxy, sharing no trust with it, and the only authoritative source for the tenant is the database row matched by the hashed bearer.
+
+## Revocation
+
+Revocation is immediate from the proxy's perspective:
+
+- The cache entry is deleted in the same transaction as the database update that sets `revoked_at`.
+- The next request to use the key triggers a cache-miss lookup, which finds the revoked record and returns 401.
+- There is a short window (≤60 seconds) where a cache rebuild from the database row can serve a "looks valid" record because the synthesise-on-miss path omits the `expires_at` and per-key spend caps. This window applies only to keys whose only invalidation reason is *expiry* or *cap exceeded* — explicit revocation deletes the cache entry directly and is not subject to it.
+
+There is no rotation endpoint. The pattern is: issue a new key, switch your tool to it, revoke the old key. For a deployment-scoped app key, this means a redeploy or an env-var update — the platform does not silently rotate a deployment's `VENDO_API_KEY` underneath the running tool.
+
+## Per-key spend caps
+
+A key can carry a spend cap (a hard ceiling on credit-equivalent spend, scoped to the key). When exceeded, the proxy returns 402 with a cap-specific status code. Caps live alongside the rest of the key metadata and are evaluated at the same point as the balance check. Caps are not exposed for arbitrary per-route configuration — they're a coarse safety net, not a metering knob.
+
+## What this protects against
+
+- **Leaked deployment key.** An attacker with a `vendo_sk_*` key can spend the tenant's credits up to the key's cap, but only against the providers the deployment's bindings allow. They cannot reach other tenants, cannot mint identity tokens, cannot read OAuth refresh tokens, cannot read the underlying real provider keys.
+- **Replay across deployments.** A key for deployment A cannot be used to access deployment B's connections or balance. Both the database resolution and the binding lookup key off the deployment that owns the key.
+- **Cross-tenant impersonation via headers.** Inbound `X-Vendo-*` headers are stripped by the app proxy on user-facing traffic, and ignored by the integration proxy on tool-facing traffic.
+
+## What this does not protect against
+
+- **Code inside the deployment.** Anything that can read `VENDO_API_KEY` from the deployment's environment can call the proxy with the tenant's credits. That includes the tool's own code, anything the tool exec's, anything that gains code execution on the Railway service. Your tool's process boundary is your tool's responsibility.
+- **A tenant who pastes their key into a third-party tool.** Once a tenant exports the key, the proxy can't tell the difference. Tenants who need a tighter blast radius issue a connection-scoped key for a single provider.
+
+<Callout type="info">
+  The full key + header reference, including the difference between `vendo_sk_*` proxy keys, identity tokens, and proxy-session JWTs, lives under [Reference](/docs/reference). All three are distinct trust surfaces; do not mix them.
+</Callout>
