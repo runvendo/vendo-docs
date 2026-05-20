@@ -1,14 +1,18 @@
 ---
 title: Python SDK Reference
-description: Full method reference for vendo-sdk (Python). Generated from packages/sdk-surface/surface.yaml.
+description: Full method reference for vendo-sdk (Python). Sourced from vendo-sdk-py.
 ---
 
-Generated from `packages/sdk-surface/surface.yaml`. Every public method on `vendo_sdk` is documented here.
+Sourced from the `vendo` package (PyPI: `vendo-sdk`). Every public method on the
+class-based client is documented here, plus the module-level helpers.
 
-All methods live on a `Vendo` (sync) or `AsyncVendo` (async) client instance. The examples below use the sync client; swap `Vendo` for `AsyncVendo` and `await` the calls for async usage.
+All client methods live on a `Vendo` (sync) or `AsyncVendo` (async) instance.
+The examples below use the sync client; swap `Vendo` for `AsyncVendo` and
+`await` the calls for async usage.
 
 ```python
-import vendo_sdk as vendo
+import vendo
+from vendo import Vendo
 ```
 
 ---
@@ -43,20 +47,17 @@ if vendo.is_vendo_mode():
 Returns a new client instance scoped to a user JWT. Use in background jobs or any code path where you hold a JWT directly.
 
 ```python
-vendo.for_user(user_jwt: str) -> Vendo
+Vendo.for_user(user_jwt: str) -> Vendo
 ```
 
 **Returns:** `Vendo` — a new client that injects `X-Vendo-User-JWT` on every outbound request.
 
 **Raises:** `VendoOnlyFeature` — in OSS mode. Multi-tenant scoping requires a Vendo backend.
 
-**Mode behavior:**
-- Vendo mode: clones the client with the JWT attached.
-- OSS mode: raises `VendoOnlyFeature`.
-
 ```python
-client = vendo.for_user(user_jwt)
-conn = client.connections.get("stripe")
+client = Vendo()
+scoped = client.for_user(user_jwt)
+conn = scoped.connections.get("stripe")
 ```
 
 ---
@@ -66,8 +67,11 @@ conn = client.connections.get("stripe")
 Returns a new client scoped to the `X-Vendo-User-JWT` extracted from an incoming request's headers.
 
 ```python
-vendo.for_request(headers: dict) -> Vendo
+Vendo.for_request(headers) -> Vendo
 ```
+
+`headers` is any Mapping-like object — Starlette / FastAPI `Headers`, `dict`,
+`werkzeug.MultiDict`, etc. Lookup is case-insensitive.
 
 **Returns:** `Vendo` — a new client scoped to the user JWT in the headers.
 
@@ -75,13 +79,9 @@ vendo.for_request(headers: dict) -> Vendo
 - `VendoOnlyFeature` — in OSS mode.
 - `IdentityNotPresent` — when `X-Vendo-User-JWT` is absent from the headers.
 
-**Mode behavior:**
-- Vendo mode: reads `X-Vendo-User-JWT` (case-insensitive) and returns a scoped client.
-- OSS mode: raises `VendoOnlyFeature`.
-
 ```python
 # In a FastAPI handler:
-client = vendo.for_request(dict(request.headers))
+client = Vendo().for_request(request.headers)
 conn = client.connections.get("notion")
 ```
 
@@ -92,7 +92,7 @@ conn = client.connections.get("notion")
 Returns the credential token for a provider slug. In Vendo mode this fetches a refreshed OAuth token; in OSS mode it reads the conventional env var.
 
 ```python
-vendo.token(slug: str) -> str
+Vendo.token(slug: str) -> str
 ```
 
 **Returns:** `str` — the credential token.
@@ -114,14 +114,10 @@ openai_key = vendo.token("openai")
 Returns tokens for multiple slugs in one call. Slugs with no token return `None`.
 
 ```python
-vendo.tokens(slugs: list[str]) -> dict[str, str | None]
+Vendo.tokens(slugs: list[str]) -> dict[str, str | None]
 ```
 
 **Returns:** `dict[str, str | None]` — mapping from slug to token or `None`.
-
-**Mode behavior:**
-- Vendo mode: fans out to `credentials.vendo.run` (or a bulk endpoint if available).
-- OSS mode: reads env vars for each slug independently. Slugs with no env var map to `None`.
 
 ```python
 tokens = vendo.tokens(["openai", "anthropic"])
@@ -135,14 +131,8 @@ tokens = vendo.tokens(["openai", "anthropic"])
 Invalidates the cached token for a slug, forcing the next `token()` call to re-fetch.
 
 ```python
-vendo.invalidate(slug: str) -> None
+Vendo.invalidate(slug: str) -> None
 ```
-
-**Returns:** `None`
-
-**Mode behavior:**
-- Vendo mode: clears the in-process cache entry.
-- OSS mode: no-op (no cache).
 
 ```python
 vendo.invalidate("google")  # force refresh after user reconnects
@@ -155,16 +145,12 @@ vendo.invalidate("google")  # force refresh after user reconnects
 Returns the OAuth connect URL for a provider slug. Use this to send users to the Vendo connect portal.
 
 ```python
-vendo.connect_url(slug: str, *, return_to: str | None = None, state: str | None = None) -> str
+Vendo.connect_url(slug: str, *, return_to: str | None = None, state: str | None = None) -> str
 ```
 
-**Returns:** `str` — URL of the form `https://vendo.run/connections/connect/{slug}`.
+`return_to` and `state` are keyword-only.
 
 **Raises:** `VendoOnlyFeature` — in OSS mode.
-
-**Mode behavior:**
-- Vendo mode: constructs the URL.
-- OSS mode: raises `VendoOnlyFeature`.
 
 ```python
 url = vendo.connect_url("stripe", return_to="https://myapp.vendo.run/dashboard")
@@ -181,14 +167,8 @@ Read the user's provider connections for this deployment.
 Returns all connections for this deployment, both connected and available.
 
 ```python
-vendo.connections.list() -> list[Connection]
+Vendo.connections.list() -> list[Connection]
 ```
-
-**Returns:** `list[Connection]` — every supported connection. Entries with `status = "available"` have no active binding.
-
-**Mode behavior:**
-- Vendo mode: calls `GET /api/deployments/me/connections`. Returns the full list.
-- OSS mode: derives connections from env vars that are set. Each entry has `profile = "byok_static"`, no `id`, no `connected_at`.
 
 ```python
 all_conns = vendo.connections.list()
@@ -199,21 +179,21 @@ connected = [c for c in all_conns if c.status == "connected"]
 
 ### connections.get
 
-Returns a single connection by provider slug, or `None` if the user has not connected it.
+Returns a single connection by provider slug, or `None` if the slug is absent from the catalog for this deployment.
 
 ```python
-vendo.connections.get(slug: str) -> Connection | None
+Vendo.connections.get(slug: str) -> Connection | None
 ```
 
-**Returns:** `Connection | None` — `None` means the provider is not connected (do not confuse with `NotConnected`, which is raised by `data.execute`).
-
-**Mode behavior:**
-- Vendo mode: fetches from `/api/deployments/me/connections` and filters by slug.
-- OSS mode: checks the BYOK env var for the slug.
+`None` means the slug is not in this deployment's catalog at all. An
+"available" connection (catalog-listed but unbound) is still returned with
+`status == "available"` — check `c.status` to distinguish.
 
 ```python
 conn = vendo.connections.get("supabase")
 if conn is None:
+    return {"error": "supabase not in catalog"}
+if conn.status != "connected":
     return {"needs_connection": "supabase"}
 ref = conn.context["ref"]
 ```
@@ -229,15 +209,7 @@ Read the integration catalog — slugs, display names, BYOK env-var names.
 Returns all integrations in the Vendo catalog.
 
 ```python
-vendo.integrations.list() -> list[Integration]
-```
-
-**Returns:** `list[Integration]`
-
-**Mode behavior:** Works in any mode. OSS mode reads the bundled catalog frozen at SDK release time.
-
-```python
-catalog = vendo.integrations.list()
+Vendo.integrations.list() -> list[Integration]
 ```
 
 ---
@@ -247,34 +219,25 @@ catalog = vendo.integrations.list()
 Returns a single integration by slug.
 
 ```python
-vendo.integrations.get(slug: str) -> Integration | None
-```
-
-**Returns:** `Integration | None`
-
-**Mode behavior:** Works in any mode.
-
-```python
-integration = vendo.integrations.get("openai")
+Vendo.integrations.get(slug: str) -> Integration | None
 ```
 
 ---
 
 ### integrations.env_vars
 
-Returns the conventional env-var names for a slug's BYOK credentials.
+Returns the BYOK env-var names this integration accepts, sourced from the bundled
+`byok.json` catalog (no network call).
 
 ```python
-vendo.integrations.env_vars(slug: str) -> dict[str, list[str]]
+Vendo.integrations.env_vars(slug: str) -> list[str]
 ```
 
-**Returns:** `dict` with keys `vars` (all env var names) and `primary` (the main one). Example: `{"vars": ["OPENAI_API_KEY"], "primary": "OPENAI_API_KEY"}`.
-
-**Mode behavior:** Works in any mode.
+Returns `[]` for unknown slugs.
 
 ```python
-info = vendo.integrations.env_vars("openai")
-# {"vars": ["OPENAI_API_KEY"], "primary": "OPENAI_API_KEY"}
+names = vendo.integrations.env_vars("slack")
+# ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET"]
 ```
 
 ---
@@ -288,55 +251,39 @@ Read credit balance and spend data. All methods require Vendo mode.
 Returns the tenant's current credit balance.
 
 ```python
-vendo.billing.balance() -> Balance
+Vendo.billing.balance() -> Balance
 ```
-
-**Returns:** `Balance` — see [Types](#types) below.
 
 **Raises:** `VendoOnlyFeature` — in OSS mode.
 
-**Mode behavior:** Vendo mode only. Calls `GET /api/billing/balance`.
-
 ```python
 balance = vendo.billing.balance()
-print(f"${balance.available_usd:.2f} remaining")
+print(f"{balance.credits_remaining_micros / 1_000_000:.2f} {balance.currency}")
 ```
 
 ---
 
 ### billing.spend_caps
 
-Returns the tenant's configured spend caps.
+Returns the tenant's configured spend caps and usage-to-date.
 
 ```python
-vendo.billing.spend_caps() -> SpendCaps
+Vendo.billing.spend_caps() -> SpendCaps
 ```
-
-**Returns:** `SpendCaps` — see [Types](#types) below.
 
 **Raises:** `VendoOnlyFeature` — in OSS mode.
-
-```python
-caps = vendo.billing.spend_caps()
-```
 
 ---
 
 ### billing.usage
 
-Returns usage data for a period. Defaults to the current billing period.
+Returns raw usage data for a period. Defaults to the current billing month.
 
 ```python
-vendo.billing.usage(*, period: str | None = None) -> dict
+Vendo.billing.usage(*, period: str = "month") -> dict
 ```
-
-**Returns:** `dict` — usage breakdown (structure may vary by billing model version).
 
 **Raises:** `VendoOnlyFeature` — in OSS mode.
-
-```python
-usage = vendo.billing.usage(period="2026-05")
-```
 
 ---
 
@@ -346,23 +293,21 @@ Server-side SSE event stream. Vendo mode only.
 
 ### events.subscribe
 
-Opens a persistent SSE stream and yields events as they arrive. Auto-reconnects with exponential backoff.
+Opens a persistent SSE stream and yields events as they arrive. Auto-reconnects with exponential backoff (capped at 30 s by default).
 
 ```python
-vendo.events.subscribe() -> AsyncIterable[Event]
+Vendo.events.subscribe(*, max_backoff_sec: float = 30.0) -> Iterator[EventStreamMessage]
 ```
 
-**Returns:** `AsyncIterable[Event]`
+**Returns:** synchronous `Iterator[EventStreamMessage]` — iterate with a plain
+`for` loop. The async client's `aio` namespace does not implement `subscribe`.
 
-**Raises:** `VendoOnlyFeature` — in OSS mode.
-
-**Mode behavior:** Vendo mode only. Falls back to polling when the SSE endpoint returns 404 or errors three times in a row.
+**Raises:** `VendoOnlyFeature` — in OSS mode (raised at call time, not on first iteration).
 
 ```python
-async with vendo.events.subscribe() as stream:
-    async for event in stream:
-        if event.kind == "connection.connected":
-            vendo.invalidate(event.slug)
+for event in vendo.events.subscribe():
+    if event.type == "connection.connected":
+        vendo.invalidate(event.data.get("slug"))
 ```
 
 ---
@@ -376,115 +321,118 @@ Verify inbound webhook signatures. Works in any mode.
 Verifies the HMAC signature on an inbound webhook and returns the parsed event.
 
 ```python
-vendo.webhooks.verify(headers: dict, body: bytes) -> WebhookEvent
+from vendo import WebhooksAPI
+
+hooks = WebhooksAPI(secret="whsec_...", max_age_sec=300)
+hooks.verify(headers, body: str) -> WebhookEvent
 ```
 
-**Returns:** `WebhookEvent` — the parsed and verified event payload.
+`secret` and `max_age_sec` are **constructor** parameters. `verify()` takes only
+`(headers, body)`. `headers` is any case-insensitive Mapping; `body` is the
+raw request body as a `str`.
 
-**Raises:** `ValidationError` — when the signature is missing or does not match.
+When `WebhooksAPI()` is constructed without `secret=`, the verifier reads
+`VENDO_WEBHOOK_SECRET` from the environment.
 
-**Mode behavior:** Works in any mode. Reads `VENDO_WEBHOOK_SECRET` from the environment. Verification is entirely local — no network call.
+**Raises:** `ValidationError` — signature missing, timestamp out of window, body not JSON, or HMAC mismatch.
 
 ```python
-event = vendo.webhooks.verify(dict(request.headers), await request.body())
-if event.kind == "connection.connected":
+event = hooks.verify(dict(request.headers), await request.body())
+if event.type == "connection.connected":
     ...
 ```
 
 ---
 
-## sso
+## sso (module)
 
-Read SSO identity from request headers. Works in any mode.
+`vendo.sso` is a **module-level** helper, not an attribute on the `Vendo`
+class. Use it from any request handler running behind the Vendo proxy.
 
 ### sso.is_enabled
-
-Returns `True` when SSO is active for this deployment.
 
 ```python
 vendo.sso.is_enabled() -> bool
 ```
 
-**Returns:** `bool`
-
-```python
-if vendo.sso.is_enabled():
-    identity = vendo.sso.identity_from_headers(headers)
-```
-
----
+Returns `True` when `VENDO_AUTH=1`.
 
 ### sso.identity_from_headers
 
-Extracts the Vendo identity from request headers.
-
 ```python
-vendo.sso.identity_from_headers(headers: dict) -> Identity | None
+vendo.sso.identity_from_headers(headers) -> VendoIdentity | None
 ```
 
-**Returns:** `Identity | None` — `None` when the identity header is absent.
+Parses trusted `X-Vendo-*` headers. Returns `None` if any required header is
+missing.
+
+### sso.identity_response
 
 ```python
-identity = vendo.sso.identity_from_headers(dict(request.headers))
-if identity:
-    print(identity.user_id)
+vendo.sso.identity_response(headers) -> dict
 ```
+
+Builds the canonical identity JSON body. Returns `{}` when headers are absent.
+
+### sso.logout_url / sso.dashboard_url
+
+```python
+vendo.sso.logout_url() -> str          # "/__vendo/auth/logout"
+vendo.sso.dashboard_url() -> str       # "https://vendo.run/dashboard"
+```
+
+### sso.IDENTITY_ENDPOINT_PATH
+
+```python
+vendo.sso.IDENTITY_ENDPOINT_PATH       # "/api/vendo/identity"
+```
+
+Recommended mount path for the identity endpoint.
 
 ---
 
-## deployment
+## deployment (module)
 
-Read metadata about the running deployment. Reads env vars at import time.
+`vendo.deployment` is a **module-level** helper, not an attribute on the
+`Vendo` class. Reads env vars set by the deploy worker.
 
 ### deployment.tenant_id
-
-Returns the `VENDO_TENANT_ID` env var value.
 
 ```python
 vendo.deployment.tenant_id() -> str | None
 ```
 
-**Returns:** `str | None` — `None` when not running inside Vendo.
-
----
-
 ### deployment.deployment_id
-
-Returns the `VENDO_DEPLOYMENT_ID` env var value.
 
 ```python
 vendo.deployment.deployment_id() -> str | None
 ```
 
-**Returns:** `str | None`
-
----
-
 ### deployment.deployment_slug
-
-Returns the `VENDO_DEPLOYMENT_SLUG` env var value.
 
 ```python
 vendo.deployment.deployment_slug() -> str | None
 ```
 
-**Returns:** `str | None`
+### deployment.api_key
 
----
+```python
+vendo.deployment.api_key() -> str | None    # from VENDO_API_KEY
+```
+
+### deployment.api_url
+
+```python
+vendo.deployment.api_url() -> str            # from VENDO_API_URL, default "https://vendo.run"
+```
 
 ### deployment.is_running_on_vendo
 
-Returns `True` when both `VENDO_API_KEY` and `VENDO_DEPLOYMENT_ID` are set.
+Returns `True` when `VENDO_DEPLOYMENT_ID` is set. Does **not** look at
+`VENDO_API_KEY`.
 
 ```python
 vendo.deployment.is_running_on_vendo() -> bool
-```
-
-**Returns:** `bool`
-
-```python
-if vendo.deployment.is_running_on_vendo():
-    print("Running inside Vendo")
 ```
 
 ---
@@ -498,18 +446,17 @@ Execute Composio-backed actions against connected providers. Vendo mode only.
 Posts an action to the Composio proxy and returns the result. The proxy validates the bearer, resolves the connected account, calls Composio, bills via the `composio.action_call` meter, and returns the response.
 
 ```python
-vendo.data.execute(action: str, args: dict | None = None) -> dict
+Vendo.data.execute(action: str, args: dict | None = None) -> dict
 ```
-
-**Returns:** `dict` — the Composio action response payload.
 
 **Raises:**
 - `NotConnected` — when the provider required by the action is not connected (`binding_missing` from the proxy).
 - `VendoOnlyFeature` — in OSS mode.
-- `UpstreamError` — when Composio returns an error.
-- `VendoTimeout` — when the action does not complete within the timeout (default 5s in sandbox; proxy default is higher).
+- `UpstreamError` — when Composio returns an error (`composio_error`).
+- `AuthError` — when `VENDO_API_KEY` is missing or invalid.
 
-**Mode behavior:** Vendo mode only. Posts to `POST /v1/composio-proxy/execute` via `VENDO_API_URL`.
+Posts to `https://composio-proxy.vendo.run/v1/execute` (override via
+`VENDO_DATA_PROXY_URL`).
 
 ```python
 result = vendo.data.execute(
@@ -520,21 +467,27 @@ result = vendo.data.execute(
 
 ---
 
-## reconciler
+## reconciler (module)
 
-File-based env-var reconciler. Keeps a `.env` file in sync with the deployment's active connections.
+`vendo.reconciler` is a **module-level** helper. File-based env-var reconciler.
+Keeps a `.env` file in sync with the deployment's active connections.
 
 ### reconciler.bootstrap
 
 Writes a `.env` file once from the current connection state.
 
 ```python
-vendo.reconciler.bootstrap(*, env_file: str, mapping: dict) -> None
+vendo.reconciler.bootstrap(
+    *,
+    env_file: str,
+    mapping: Callable[[], Mapping[str, str]],
+    on_change: "restart" | "reload-hook" | Callable | None = None,
+    reload_url: str | None = None,
+) -> None
 ```
 
-**Returns:** `None`
-
-**Mode behavior:** Works in any mode.
+`mapping` is a **callable** returning a `{VAR_NAME: value}` dict — not the dict
+itself. All keyword-only.
 
 ```python
 mapping, _ = vendo.reconciler.catalog_default()
@@ -551,15 +504,14 @@ Starts a long-running watcher that keeps the `.env` file in sync and optionally 
 vendo.reconciler.start(
     *,
     env_file: str,
-    mapping: dict,
-    on_change: Callable | None = None,
+    mapping: Callable[[], Mapping[str, str]],
+    on_change: "restart" | "reload-hook" | Callable = "restart",
     reload_url: str | None = None,
 ) -> Reconciler
 ```
 
-**Returns:** `Reconciler` — call `.stop()` to shut down the watcher.
-
-**Mode behavior:** Works in any mode. In Vendo mode, SSE events from `events.subscribe` drive immediate invalidation instead of waiting for the poll interval.
+`on_change` defaults to the string sentinel `"restart"`. Other values:
+`"reload-hook"` (POST to `reload_url`) or any `Callable[[diff], None]`.
 
 ```python
 mapping, restart_factory = vendo.reconciler.catalog_default()
@@ -568,6 +520,7 @@ reconciler = vendo.reconciler.start(
     mapping=mapping,
     on_change=restart_factory(gateway=lambda: os.kill(os.getpid(), signal.SIGHUP)),
 )
+reconciler.stop()
 ```
 
 ---
@@ -577,13 +530,7 @@ reconciler = vendo.reconciler.start(
 Returns a default mapping and restart handler factory derived from the deployment's `vendo.yaml`.
 
 ```python
-vendo.reconciler.catalog_default(client=None) -> tuple[dict, Callable]
-```
-
-**Returns:** `(mapping, restart_handler_factory)`
-
-```python
-mapping, restart_factory = vendo.reconciler.catalog_default()
+vendo.reconciler.catalog_default(client=None) -> tuple[Callable, Callable]
 ```
 
 ---
@@ -597,48 +544,22 @@ Represents a provider connection for this deployment.
 | Field | Type | Description |
 |---|---|---|
 | `id` | `str \| None` | UUID. `None` on `available` entries. |
+| `external_id` | `str \| None` | Provider-side identifier (the provider's user ID, account ID, etc.). |
 | `slug` | `str` | Provider slug, e.g. `"supabase"`, `"stripe"`. |
 | `display_name` | `str` | Human-readable provider name. |
 | `category` | `str` | Provider category, e.g. `"database"`, `"crm"`. |
 | `profile` | `str` | How the credential is managed. One of: `"vendo_managed_pool"`, `"byok_static"`, `"user_oauth"`, `"oauth_app_install"`, `"webhook_inbound"`. |
-| `status` | `str` | `"connected"`, `"available"`, `"needs_reauth"`, or `"error"`. |
-| `context` | `dict \| None` | Flattened discovery identifiers for this provider (e.g. `{"ref": "vqxkddreoeebocpisgrn"}` for Supabase). `None` for non-discovery providers (Slack, Gmail, etc.). |
-| `api_key` | `str \| None` | Set only for `vendo_managed_pool` connections. Pass directly to the provider client. |
-| `base_url` | `str \| None` | Set only for `vendo_managed_pool` connections. The Vendo proxy URL to route through. |
-| `metadata` | `dict` | Raw provider metadata. The `context` field is promoted from here — prefer `context` over `metadata["context"]`. |
+| `status` | `str` | `"connected"`, `"available"`, `"pending_setup"`, `"needs_reauth"`, `"error"`, or `"revoked"`. |
+| `metadata` | `dict` | Raw provider metadata. The `context` field is promoted from here — prefer `context`. |
+| `context` | `dict \| None` | Flattened discovery identifiers (e.g. `{"ref": "vqxkddreoeebocpisgrn"}` for Supabase). `None` for non-discovery providers. |
+| `credential` | `dict \| None` | Per-provider credential payload (used by `vendo_managed_pool` connections). |
 | `setup_url` | `str \| None` | OAuth connect URL. Set on `available` entries, `None` when already connected. |
-| `error_message` | `str \| None` | Human-readable error. Set when `status` is `"error"` or `"needs_reauth"`. |
-| `env_bootstrap` | `dict \| None` | Env-var bootstrap spec. Tells the reconciler which vars to write and when to restart. |
-| `exclusive` | `bool \| None` | `True` when only one running instance can use this credential at a time (e.g. Telegram). |
+| `error_message` | `str \| None` | Human-readable error when `status` is `"error"` or `"needs_reauth"`. |
+| `connected_at` | `str \| None` | ISO 8601 timestamp of when the connection was established. |
 | `logo_url` | `str \| None` | Provider logo URL. |
 | `brand_color` | `str \| None` | Provider brand color (hex). |
 | `docs_url` | `str \| None` | Provider documentation URL. |
-| `connected_at` | `str \| None` | ISO 8601 timestamp of when the connection was established. |
-
-Example JSON:
-
-```json
-{
-  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "slug": "supabase",
-  "display_name": "Supabase",
-  "category": "database",
-  "profile": "user_oauth",
-  "status": "connected",
-  "context": { "ref": "vqxkddreoeebocpisgrn" },
-  "api_key": null,
-  "base_url": null,
-  "metadata": {},
-  "setup_url": null,
-  "error_message": null,
-  "env_bootstrap": null,
-  "exclusive": null,
-  "logo_url": "https://vendo.run/logos/supabase.svg",
-  "brand_color": "#3ECF8E",
-  "docs_url": "https://supabase.com/docs",
-  "connected_at": "2026-05-19T12:34:56Z"
-}
-```
+| `env_bootstrap` | `dict \| None` | Env-var bootstrap spec. Tells the reconciler which vars to write and when to restart. |
 
 **Context field by provider:**
 
@@ -654,9 +575,9 @@ Example JSON:
 
 | Field | Type | Description |
 |---|---|---|
-| `available_usd` | `float` | Available credit balance in USD. |
-| `pending_usd` | `float` | Pending charges not yet settled. |
-| `currency` | `str` | Always `"usd"` for now. |
+| `credits_remaining_micros` | `int` | Remaining credits, in micros (1 credit = 1_000_000 micros). |
+| `currency` | `str` | Currency code, e.g. `"USD"`. |
+| `top_up_url` | `str` | URL the user can visit to top up the wallet. |
 
 ---
 
@@ -664,8 +585,10 @@ Example JSON:
 
 | Field | Type | Description |
 |---|---|---|
-| `monthly_usd` | `float \| None` | Monthly spend cap in USD. `None` if not set. |
-| `daily_usd` | `float \| None` | Daily spend cap in USD. `None` if not set. |
+| `daily_micros` | `int \| None` | Daily spend cap in micros. `None` if not set. |
+| `monthly_micros` | `int \| None` | Monthly spend cap in micros. `None` if not set. |
+| `used_today_micros` | `int` | Micros spent so far today. |
+| `used_month_micros` | `int` | Micros spent so far this calendar month. |
 
 ---
 
@@ -675,8 +598,30 @@ Example JSON:
 |---|---|---|
 | `slug` | `str` | Canonical integration slug. |
 | `name` | `str` | Human-readable name. |
+| `description` | `str` | Short marketing description. |
 | `category` | `str` | Category. |
-| `env_vars` | `dict` | BYOK env-var names: `{"vars": [...], "primary": "..."}`. |
+| `logo_url` | `str \| None` | Logo URL. |
+| `brand_color` | `str \| None` | Brand hex color. |
+| `docs_url` | `str \| None` | Documentation URL. |
+| `supported_profiles` | `tuple` | Profiles this integration supports. |
+| `default_profile` | `str` | The profile used when the tenant has not explicitly chosen one. |
+| `enabled` | `bool` | Whether the integration is enabled in the catalog. |
+| `featured` | `bool` | Whether the integration is featured in the dashboard. |
+
+To get BYOK env-var names for an integration, call
+`vendo.integrations.env_vars(slug)` — that data lives in the bundled `byok.json`,
+not on the `Integration` dataclass.
+
+---
+
+### EventStreamMessage
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | `str` | SSE event type, e.g. `"connection.connected"`. |
+| `data` | `object` | Decoded JSON payload (or raw string if not JSON). |
+| `id` | `str \| None` | SSE `id:` line, when present. |
+| `retry` | `int \| None` | SSE `retry:` line (ms), when present. |
 
 ---
 
@@ -684,20 +629,24 @@ Example JSON:
 
 | Field | Type | Description |
 |---|---|---|
-| `kind` | `str` | Event type, e.g. `"connection.connected"`. |
-| `deployment_id` | `str` | ID of the deployment that received the webhook. |
-| `payload` | `dict` | Event-specific payload. |
-| `timestamp` | `str` | ISO 8601 timestamp. |
+| `id` | `str` | Event UUID. |
+| `type` | `str` | Event type, e.g. `"connection.connected"`. |
+| `occurred_at` | `str` | ISO 8601 timestamp. |
+| `data` | `dict` | Event-specific payload. |
 
 ---
 
-### Identity
+### VendoIdentity
+
+Returned by `vendo.sso.identity_from_headers()`.
 
 | Field | Type | Description |
 |---|---|---|
 | `user_id` | `str` | The Vendo user's UUID. |
-| `email` | `str \| None` | User email if available. |
+| `email` | `str` | User email. |
+| `name` | `str` | User display name. |
 | `tenant_id` | `str` | The tenant UUID. |
+| `role` | `str` | The user's role on this tenant. |
 
 ---
 
@@ -706,15 +655,17 @@ Example JSON:
 | Class | Parent | When raised |
 |---|---|---|
 | `VendoError` | `Exception` | Base class for all SDK errors. |
-| `AuthError` | `VendoError` | Bad or expired API key. |
-| `NotConnected` | `VendoError` | Required provider is not connected or env var is missing. Carries `slug` and `suggested_env_vars`. |
-| `NeedsReauth` | `VendoError` | Connection exists but requires re-authorization (OAuth token expired, revoked). |
-| `BalanceExhausted` | `VendoError` | Credit balance is zero. |
-| `SpendCapExceeded` | `VendoError` | A spend cap was hit. |
-| `RateLimited` | `VendoError` | Too many requests. Carries `retry_after`. |
-| `UpstreamError` | `VendoError` | The upstream provider (Composio, the provider API) returned an error. |
-| `ValidationError` | `VendoError` | Input failed validation (e.g. bad webhook signature). |
-| `IdempotencyConflict` | `VendoError` | Duplicate idempotency key with a different request body. |
-| `VendoOnlyFeature` | `VendoError` | Called a Vendo-only method in OSS mode. Carries a hint message. |
-| `IdentityNotPresent` | `VendoError` | `for_request()` called but `X-Vendo-User-JWT` header is absent. |
-| `VendoTimeout` | `VendoError` | Operation exceeded the timeout (default 5s in sandbox). |
+| `AuthError` | `VendoError` | `app_unknown` / `app_revoked` / `app_expired`. |
+| `NotConnected` | `VendoError` | `binding_missing` / `connection_revoked`. Carries `slug` and `suggested_fix`. |
+| `NeedsReauth` | `VendoError` | `connection_needs_reauth` — connection exists but requires re-authorization. Carries `connect_url`. |
+| `BalanceExhausted` | `VendoError` | `balance_exhausted` — credit balance is zero. |
+| `SpendCapExceeded` | `VendoError` | `spend_cap_daily` / `spend_cap_monthly`. Carries `retry_after`. |
+| `RateLimited` | `VendoError` | `upstream_rate_limited`. Carries `retry_after`. |
+| `UpstreamError` | `VendoError` | `upstream_error` — provider returned an error. |
+| `ValidationError` | `VendoError` | `validation_failed` (e.g. bad webhook signature). |
+| `IdempotencyConflict` | `VendoError` | `idempotency_conflict` — duplicate key with different body. |
+| `VendoOnlyFeature` | `VendoError` | `vendo_only_feature` — called a Vendo-only method in OSS mode. |
+| `IdentityNotPresent` | `VendoError` | `identity_not_present` — `for_request()` called but header absent. |
+
+Every `VendoError` instance carries `code`, `message`, `status` (HTTP), and
+when applicable `slug`, `connect_url`, `retry_after`, `suggested_fix`.

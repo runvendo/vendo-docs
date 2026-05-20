@@ -1,11 +1,14 @@
 ---
 title: TypeScript SDK Reference
-description: Full method reference for @vendodev/sdk (TypeScript). Generated from packages/sdk-surface/surface.yaml.
+description: Full method reference for @vendodev/sdk (TypeScript). Sourced from vendo-sdk-js.
 ---
 
-Generated from `packages/sdk-surface/surface.yaml`. Every public method on `@vendodev/sdk` is documented here.
+Sourced from `@vendodev/sdk`. Every public method on the `Vendo` client is
+documented here, plus the subpath modules (`reconciler`) and top-level helpers.
 
-All methods live on a `Vendo` client instance. Every method is `async` and returns a `Promise`. The client is always async — there is no sync variant.
+Every request method is `async` and returns a `Promise`. The two exceptions are
+`invalidate(slug)` (synchronous cache eviction) and `connectUrl(slug, opts?)`
+(URL builder).
 
 ```typescript
 import { Vendo } from "@vendodev/sdk";
@@ -26,12 +29,6 @@ Returns `true` when the SDK is running in Vendo mode (`VENDO_API_KEY` is set).
 vendo.isVendoMode(): boolean
 ```
 
-**Returns:** `boolean` — `true` in Vendo mode, `false` in OSS/BYOK mode.
-
-**Mode behavior:**
-- Vendo mode: returns `true`.
-- OSS mode: returns `false`. Does not throw.
-
 ```typescript
 if (vendo.isVendoMode()) {
   const balance = await vendo.billing.balance();
@@ -42,23 +39,17 @@ if (vendo.isVendoMode()) {
 
 ### forUser
 
-Returns a new client instance scoped to a user JWT. Use in background jobs or code paths where you hold a JWT directly.
+Returns a new client instance scoped to a user JWT.
 
 ```typescript
 vendo.forUser(userJwt: string): Vendo
 ```
 
-**Returns:** `Vendo` — a new client that injects `X-Vendo-User-JWT` on every outbound request.
-
 **Throws:** `VendoOnlyFeature` — in OSS mode.
 
-**Mode behavior:**
-- Vendo mode: clones the client with the JWT attached.
-- OSS mode: throws `VendoOnlyFeature`.
-
 ```typescript
-const client = vendo.forUser(userJwt);
-const conn = await client.connections.get("stripe");
+const scoped = vendo.forUser(userJwt);
+const conn = await scoped.connections.get("stripe");
 ```
 
 ---
@@ -71,20 +62,13 @@ Returns a new client scoped to the `X-Vendo-User-JWT` extracted from an incoming
 vendo.forRequest(headers: Headers | Record<string, string>): Vendo
 ```
 
-**Returns:** `Vendo` — a new client scoped to the user JWT in the headers.
-
 **Throws:**
 - `VendoOnlyFeature` — in OSS mode.
 - `IdentityNotPresent` — when `X-Vendo-User-JWT` is absent from the headers.
 
-**Mode behavior:**
-- Vendo mode: reads `X-Vendo-User-JWT` (case-insensitive) and returns a scoped client.
-- OSS mode: throws `VendoOnlyFeature`.
-
 ```typescript
-// In a Next.js route handler:
-const client = vendo.forRequest(request.headers);
-const conn = await client.connections.get("notion");
+const scoped = vendo.forRequest(request.headers);
+const conn = await scoped.connections.get("notion");
 ```
 
 ---
@@ -97,13 +81,7 @@ Returns the credential token for a provider slug. In Vendo mode this fetches a r
 vendo.token(slug: string): Promise<string>
 ```
 
-**Returns:** `Promise<string>` — the credential token.
-
 **Throws:** `NotConnected` — when no token is found.
-
-**Mode behavior:**
-- Vendo mode: calls `credentials.vendo.run`, caches in-process.
-- OSS mode: reads the `primary` env var from the bundled BYOK map. Override any slug with `VENDO_TOKEN_<UPPER_SLUG>`.
 
 ```typescript
 const openaiKey = await vendo.token("openai");
@@ -119,12 +97,6 @@ Returns tokens for multiple slugs in one call.
 vendo.tokens(slugs: string[]): Promise<Record<string, string | null>>
 ```
 
-**Returns:** `Promise<Record<string, string | null>>` — mapping from slug to token or `null`.
-
-**Mode behavior:**
-- Vendo mode: fans out to `credentials.vendo.run`.
-- OSS mode: reads env vars for each slug; unmapped slugs return `null`.
-
 ```typescript
 const tokens = await vendo.tokens(["openai", "anthropic"]);
 // { openai: "sk-...", anthropic: null }
@@ -134,17 +106,11 @@ const tokens = await vendo.tokens(["openai", "anthropic"]);
 
 ### invalidate
 
-Invalidates the cached token for a slug, forcing the next `token()` call to re-fetch.
+Synchronously evicts the cached token for a slug. The next `token()` call re-fetches.
 
 ```typescript
 vendo.invalidate(slug: string): void
 ```
-
-**Returns:** `void`
-
-**Mode behavior:**
-- Vendo mode: clears the in-process cache entry.
-- OSS mode: no-op.
 
 ```typescript
 vendo.invalidate("google");
@@ -160,13 +126,7 @@ Returns the OAuth connect URL for a provider slug.
 vendo.connectUrl(slug: string, options?: { returnTo?: string; state?: string }): string
 ```
 
-**Returns:** `string` — URL of the form `https://vendo.run/connections/connect/{slug}`.
-
 **Throws:** `VendoOnlyFeature` — in OSS mode.
-
-**Mode behavior:**
-- Vendo mode: constructs the URL.
-- OSS mode: throws `VendoOnlyFeature`.
 
 ```typescript
 const url = vendo.connectUrl("stripe", { returnTo: "https://myapp.vendo.run/dashboard" });
@@ -186,11 +146,7 @@ Returns all connections for this deployment, both connected and available.
 vendo.connections.list(): Promise<Connection[]>
 ```
 
-**Returns:** `Promise<Connection[]>` — every supported connection. Entries with `status === "available"` have no active binding.
-
-**Mode behavior:**
-- Vendo mode: calls `GET /api/deployments/me/connections`.
-- OSS mode: derives connections from env vars. Each entry has `profile: "byok_static"`, no `id`, no `connectedAt`.
+Concurrent calls share one in-flight HTTP request.
 
 ```typescript
 const all = await vendo.connections.list();
@@ -201,23 +157,20 @@ const connected = all.filter(c => c.status === "connected");
 
 ### connections.get
 
-Returns a single connection by provider slug, or `null` if the user has not connected it.
+Returns a single connection by provider slug, or `null` if the slug is absent from this deployment's catalog.
 
 ```typescript
 vendo.connections.get(slug: string): Promise<Connection | null>
 ```
 
-**Returns:** `Promise<Connection | null>` — `null` means not connected (do not confuse with `NotConnected`, which is thrown by `data.execute`).
-
-**Mode behavior:**
-- Vendo mode: fetches from `/api/deployments/me/connections` and filters by slug.
-- OSS mode: checks the BYOK env var for the slug.
+`null` means the slug is not in this deployment's catalog at all. An
+"available" connection (catalog-listed but unbound) is still returned with
+`status === "available"` — check the status to distinguish.
 
 ```typescript
 const conn = await vendo.connections.get("supabase");
-if (!conn) {
-  return { needsConnection: "supabase" };
-}
+if (!conn) return { error: "supabase not in catalog" };
+if (conn.status !== "connected") return { needsConnection: "supabase" };
 const ref = conn.context?.["ref"];
 ```
 
@@ -229,53 +182,31 @@ Read the integration catalog.
 
 ### integrations.list
 
-Returns all integrations in the Vendo catalog.
-
 ```typescript
 vendo.integrations.list(): Promise<Integration[]>
-```
-
-**Returns:** `Promise<Integration[]>`
-
-**Mode behavior:** Works in any mode.
-
-```typescript
-const catalog = await vendo.integrations.list();
 ```
 
 ---
 
 ### integrations.get
 
-Returns a single integration by slug.
-
 ```typescript
 vendo.integrations.get(slug: string): Promise<Integration | null>
-```
-
-**Returns:** `Promise<Integration | null>`
-
-```typescript
-const integration = await vendo.integrations.get("openai");
 ```
 
 ---
 
 ### integrations.envVars
 
-Returns the conventional env-var names for a slug's BYOK credentials.
+Returns the BYOK env-var names this integration accepts.
 
 ```typescript
-vendo.integrations.envVars(slug: string): Promise<EnvVarMap>
+vendo.integrations.envVars(slug: string): Promise<string[]>
 ```
 
-**Returns:** `Promise<EnvVarMap>` — `{ vars: string[], primary: string }`.
-
-**Mode behavior:** Works in any mode.
-
 ```typescript
-const info = await vendo.integrations.envVars("openai");
-// { vars: ["OPENAI_API_KEY"], primary: "OPENAI_API_KEY" }
+const names = await vendo.integrations.envVars("slack");
+// ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET"]
 ```
 
 ---
@@ -286,56 +217,40 @@ Read credit balance and spend data. All methods require Vendo mode.
 
 ### billing.balance
 
-Returns the tenant's current credit balance.
-
 ```typescript
 vendo.billing.balance(): Promise<Balance>
 ```
-
-**Returns:** `Promise<Balance>`
 
 **Throws:** `VendoOnlyFeature` — in OSS mode.
 
 ```typescript
 const balance = await vendo.billing.balance();
-console.log(`$${balance.availableUsd.toFixed(2)} remaining`);
+console.log(
+  `${(balance.creditsRemainingMicros / 1_000_000).toFixed(2)} ${balance.currency} remaining`
+);
 ```
 
 ---
 
 ### billing.spendCaps
 
-Returns the tenant's configured spend caps.
-
 ```typescript
 vendo.billing.spendCaps(): Promise<SpendCaps>
 ```
 
-**Returns:** `Promise<SpendCaps>`
-
 **Throws:** `VendoOnlyFeature` — in OSS mode.
-
-```typescript
-const caps = await vendo.billing.spendCaps();
-```
 
 ---
 
 ### billing.usage
 
-Returns usage data for a period.
+Returns raw usage data for a period.
 
 ```typescript
-vendo.billing.usage(options?: { period?: string }): Promise<object>
+vendo.billing.usage(options?: { period?: "day" | "month" }): Promise<unknown>
 ```
 
-**Returns:** `Promise<object>` — usage breakdown.
-
-**Throws:** `VendoOnlyFeature` — in OSS mode.
-
-```typescript
-const usage = await vendo.billing.usage({ period: "2026-05" });
-```
+Defaults to `"month"`.
 
 ---
 
@@ -345,22 +260,27 @@ Server-side SSE event stream. Vendo mode only.
 
 ### events.subscribe
 
-Opens a persistent SSE stream and yields events as they arrive. Auto-reconnects with exponential backoff.
+Opens a persistent SSE stream and yields events as they arrive. Reconnects with exponential backoff (capped at 30 s by default).
 
 ```typescript
-vendo.events.subscribe(): AsyncIterable<Event>
+vendo.events.subscribe(options?: SubscribeOptions): AsyncIterable<EventStreamMessage>
 ```
 
-**Returns:** `AsyncIterable<Event>`
+```typescript
+interface SubscribeOptions {
+  signal?: AbortSignal;
+  maxBackoffMs?: number;  // default 30_000
+  onReconnect?: (attempt: number, err?: Error) => void;
+}
+```
 
 **Throws:** `VendoOnlyFeature` — in OSS mode.
 
-**Mode behavior:** Vendo mode only. Falls back to polling when SSE errors three times in a row.
-
 ```typescript
 for await (const event of vendo.events.subscribe()) {
-  if (event.kind === "connection.connected") {
-    vendo.invalidate(event.slug);
+  if (event.type === "connection.connected") {
+    const slug = (event.data as { slug?: string }).slug;
+    if (slug) vendo.invalidate(slug);
   }
 }
 ```
@@ -376,103 +296,23 @@ Verify inbound webhook signatures. Works in any mode.
 Verifies the HMAC signature on an inbound webhook and returns the parsed event.
 
 ```typescript
-vendo.webhooks.verify(headers: Headers | Record<string, string>, body: string | Buffer): WebhookEvent
+import { WebhooksAPI } from "@vendodev/sdk";
+
+const hooks = new WebhooksAPI({ secret: "whsec_...", maxAgeSec: 300 });
+hooks.verify(headers: Headers | Record<string, string>, body: string): WebhookEvent
 ```
 
-**Returns:** `WebhookEvent`
+`secret` and `maxAgeSec` are **constructor** parameters on `WebhooksAPI`.
+`verify()` takes only `(headers, body)`. `body` is a `string`.
 
-**Throws:** `ValidationError` — when the signature is missing or does not match.
+When the SDK is constructed without an explicit secret, the verifier reads
+`VENDO_WEBHOOK_SECRET` from `process.env`.
 
-**Mode behavior:** Works in any mode. Reads `VENDO_WEBHOOK_SECRET` from the environment. Entirely local — no network call.
+**Throws:** `ValidationError` — signature missing, timestamp out of window, body not JSON, or HMAC mismatch.
 
 ```typescript
 const event = vendo.webhooks.verify(request.headers, rawBody);
-if (event.kind === "connection.connected") { ... }
-```
-
----
-
-## sso
-
-Read SSO identity from request headers. Works in any mode.
-
-### sso.isEnabled
-
-Returns `true` when SSO is active for this deployment.
-
-```typescript
-vendo.sso.isEnabled(): boolean
-```
-
-**Returns:** `boolean`
-
----
-
-### sso.identityFromHeaders
-
-Extracts the Vendo identity from request headers.
-
-```typescript
-vendo.sso.identityFromHeaders(headers: Headers | Record<string, string>): Identity | null
-```
-
-**Returns:** `Identity | null` — `null` when the identity header is absent.
-
-```typescript
-const identity = vendo.sso.identityFromHeaders(request.headers);
-if (identity) {
-  console.log(identity.userId);
-}
-```
-
----
-
-## deployment
-
-Read metadata about the running deployment. Reads env vars at import time.
-
-### deployment.tenantId
-
-Returns the `VENDO_TENANT_ID` env var value.
-
-```typescript
-vendo.deployment.tenantId(): string | null
-```
-
----
-
-### deployment.deploymentId
-
-Returns the `VENDO_DEPLOYMENT_ID` env var value.
-
-```typescript
-vendo.deployment.deploymentId(): string | null
-```
-
----
-
-### deployment.deploymentSlug
-
-Returns the `VENDO_DEPLOYMENT_SLUG` env var value.
-
-```typescript
-vendo.deployment.deploymentSlug(): string | null
-```
-
----
-
-### deployment.isRunningOnVendo
-
-Returns `true` when both `VENDO_API_KEY` and `VENDO_DEPLOYMENT_ID` are set.
-
-```typescript
-vendo.deployment.isRunningOnVendo(): boolean
-```
-
-```typescript
-if (vendo.deployment.isRunningOnVendo()) {
-  console.log("Running inside Vendo");
-}
+if (event.type === "connection.connected") { ... }
 ```
 
 ---
@@ -483,21 +323,20 @@ Execute Composio-backed actions against connected providers. Vendo mode only.
 
 ### data.execute
 
-Posts an action to the Composio proxy and returns the result.
+Posts an action to the Composio proxy and returns the unwrapped result.
 
 ```typescript
-vendo.data.execute(action: string, args?: Record<string, unknown>): Promise<Record<string, unknown>>
+vendo.data.execute(action: string, args?: Record<string, unknown>): Promise<unknown>
 ```
 
-**Returns:** `Promise<Record<string, unknown>>` — the Composio action response payload.
+Posts to `https://composio-proxy.vendo.run/v1/execute` (override via
+`VENDO_DATA_PROXY_URL`).
 
 **Throws:**
-- `NotConnected` — when the provider required by the action is not connected.
+- `NotConnected` (`binding_missing`) — when the provider required by the action is not connected.
 - `VendoOnlyFeature` — in OSS mode.
-- `UpstreamError` — when Composio returns an error.
-- `VendoTimeout` — when the action exceeds the timeout (default 5s in sandbox).
-
-**Mode behavior:** Vendo mode only. Posts to `POST /v1/composio-proxy/execute`.
+- `UpstreamError` (`composio_error`) — when Composio returns an error.
+- `AuthError` — when `VENDO_API_KEY` is missing or invalid.
 
 ```typescript
 const result = await vendo.data.execute(
@@ -508,66 +347,68 @@ const result = await vendo.data.execute(
 
 ---
 
-## reconciler
+## reconciler (subpath module)
 
-File-based env-var reconciler. Keeps a `.env` file in sync with active connections.
+`@vendodev/sdk/reconciler` is a Node-only subpath module — **not** a property on
+the `Vendo` class. It is a separate import.
+
+```typescript
+import * as reconciler from "@vendodev/sdk/reconciler";
+```
 
 ### reconciler.bootstrap
 
 Writes a `.env` file once from the current connection state.
 
 ```typescript
-vendo.reconciler.bootstrap(options: { envFile: string; mapping: Record<string, unknown> }): Promise<void>
+reconciler.bootstrap(options: ReconcilerOptions): Promise<void>
 ```
 
-**Mode behavior:** Works in any mode.
+```typescript
+interface ReconcilerOptions {
+  envFile: string;
+  mapping: () => Promise<Record<string, string>> | Record<string, string>;
+  onChange?: "restart" | "reload-hook" | ((diff: ReconcilerDiff) => void | Promise<void>);
+  reloadUrl?: string;
+  pollIntervalMs?: number;
+}
+```
+
+`mapping` is a **callable** returning the env dict — not the dict itself.
 
 ```typescript
-const { mapping } = await vendo.reconciler.catalogDefault();
-await vendo.reconciler.bootstrap({ envFile: "/app/.env", mapping });
+await reconciler.bootstrap({
+  envFile: "/app/.env",
+  mapping: async () => ({ OPENAI_API_KEY: await vendo.token("openai") }),
+});
 ```
 
 ---
 
 ### reconciler.start
 
-Starts a long-running watcher that keeps the `.env` file in sync.
+Starts a long-running watcher that polls `mapping()` every `pollIntervalMs` (default 30 s) and applies the diff to the env file.
 
 ```typescript
-vendo.reconciler.start(options: {
-  envFile: string;
-  mapping: Record<string, unknown>;
-  onChange?: () => void;
-  reloadUrl?: string;
-}): Promise<Reconciler>
+reconciler.start(options: ReconcilerOptions): Promise<Reconciler>
 ```
 
-**Returns:** `Promise<Reconciler>` — call `.stop()` to shut down the watcher.
-
-**Mode behavior:** Works in any mode. In Vendo mode, SSE events drive immediate invalidation.
+**Returns:** an object with a `stop(): void` method.
 
 ```typescript
-const { mapping, restartHandlerFactory } = await vendo.reconciler.catalogDefault();
-const reconciler = await vendo.reconciler.start({
+const r = await reconciler.start({
   envFile: "/app/.env",
-  mapping,
-  onChange: restartHandlerFactory({ gateway: () => process.exit(0) }),
+  mapping: async () => ({ OPENAI_API_KEY: await vendo.token("openai") }),
+  onChange: "restart",
 });
+// Later:
+r.stop();
 ```
 
----
-
-### reconciler.catalogDefault
-
-Returns a default mapping and restart handler factory.
-
-```typescript
-vendo.reconciler.catalogDefault(options?: { client?: Vendo }): Promise<{ mapping: Record<string, unknown>; restartHandlerFactory: Function }>
-```
-
-```typescript
-const { mapping, restartHandlerFactory } = await vendo.reconciler.catalogDefault();
-```
+`onChange` values:
+- `"restart"` — `process.exit(0)` (your supervisor restarts the container).
+- `"reload-hook"` — POST `{ changed: [...] }` to `reloadUrl`.
+- `(diff) => void | Promise<void>` — call your custom handler.
 
 ---
 
@@ -579,52 +420,30 @@ Represents a provider connection for this deployment.
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `string \| null` | UUID. `null` on `available` entries. |
-| `slug` | `string` | Provider slug, e.g. `"supabase"`, `"stripe"`. |
+| `id` | `string` | UUID. Required. |
+| `externalId` | `string` | Provider-side identifier (user ID, account ID, etc.). Required. |
+| `slug` | `string` | Provider slug. |
 | `displayName` | `string` | Human-readable provider name. |
 | `category` | `string` | Provider category. |
 | `profile` | `string` | Credential management mode. |
-| `status` | `"connected" \| "available" \| "needs_reauth" \| "error"` | Connection state. |
+| `status` | `"connected" \| "available" \| "pending_setup" \| "needs_reauth" \| "error" \| "revoked"` | Connection state. |
+| `metadata` | `Record<string, unknown>` | Raw provider metadata. Prefer `context` for discovery identifiers. |
 | `context` | `Record<string, unknown> \| null` | Flattened discovery identifiers (e.g. `{ ref: "vqxkddreoeebocpisgrn" }` for Supabase). `null` for non-discovery providers. |
-| `apiKey` | `string \| null` | Set only for `vendo_managed_pool` connections. |
-| `baseUrl` | `string \| null` | Set only for `vendo_managed_pool` connections. |
-| `metadata` | `Record<string, unknown>` | Raw provider metadata. Prefer `context` over reading from here directly. |
+| `credential` | `Record<string, string \| number> \| null` | Per-provider credential payload (used by `vendo_managed_pool` connections). |
 | `setupUrl` | `string \| null` | OAuth connect URL. Set on `available` entries. |
 | `errorMessage` | `string \| null` | Human-readable error when `status` is `"error"` or `"needs_reauth"`. |
-| `envBootstrap` | `object \| null` | Env-var bootstrap spec for the reconciler. |
-| `exclusive` | `boolean \| undefined` | `true` when only one instance can hold this credential (e.g. Telegram). |
-| `logoUrl` | `string \| undefined` | Provider logo URL. |
-| `brandColor` | `string \| undefined` | Provider brand color (hex). |
-| `docsUrl` | `string \| undefined` | Provider docs URL. |
 | `connectedAt` | `string \| null` | ISO 8601 timestamp. |
-
-Example JSON (TypeScript camelCase keys):
-
-```json
-{
-  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "slug": "supabase",
-  "displayName": "Supabase",
-  "category": "database",
-  "profile": "user_oauth",
-  "status": "connected",
-  "context": { "ref": "vqxkddreoeebocpisgrn" },
-  "apiKey": null,
-  "baseUrl": null,
-  "metadata": {},
-  "setupUrl": null,
-  "errorMessage": null,
-  "envBootstrap": null,
-  "connectedAt": "2026-05-19T12:34:56Z"
-}
-```
+| `logoUrl` | `string` | Provider logo URL (empty string when missing). |
+| `brandColor` | `string` | Provider brand color hex (empty string when missing). |
+| `docsUrl` | `string` | Provider docs URL (empty string when missing). |
+| `envBootstrap` | `EnvBootstrap \| null` | Env-var bootstrap spec for the reconciler. |
 
 **Context field by provider:**
 
 | Provider | `context` shape |
 |---|---|
 | `supabase` | `{ ref: "<project-ref>" }` |
-| `instagram` | `{ igUserId: "<id>" }` |
+| `instagram` | `{ ig_user_id: "<id>" }` |
 | Slack, Gmail, Stripe, etc. | `null` |
 
 ---
@@ -633,9 +452,9 @@ Example JSON (TypeScript camelCase keys):
 
 | Field | Type | Description |
 |---|---|---|
-| `availableUsd` | `number` | Available credit balance in USD. |
-| `pendingUsd` | `number` | Pending charges not yet settled. |
-| `currency` | `string` | Always `"usd"`. |
+| `creditsRemainingMicros` | `number` | Remaining credits, in micros (1 credit = 1_000_000 micros). |
+| `currency` | `string` | Currency code, e.g. `"USD"`. |
+| `topUpUrl` | `string` | URL the user can visit to top up. |
 
 ---
 
@@ -643,8 +462,21 @@ Example JSON (TypeScript camelCase keys):
 
 | Field | Type | Description |
 |---|---|---|
-| `monthlyUsd` | `number \| null` | Monthly cap in USD. `null` if unset. |
-| `dailyUsd` | `number \| null` | Daily cap in USD. `null` if unset. |
+| `dailyMicros` | `number \| null` | Daily spend cap in micros. `null` if unset. |
+| `monthlyMicros` | `number \| null` | Monthly spend cap in micros. `null` if unset. |
+| `usedTodayMicros` | `number` | Micros spent so far today. |
+| `usedMonthMicros` | `number` | Micros spent so far this calendar month. |
+
+---
+
+### EventStreamMessage
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | `string` | SSE event type, e.g. `"connection.connected"`. |
+| `data` | `unknown` | Decoded JSON payload (or raw string when not JSON). |
+| `id` | `string \| undefined` | SSE `id:` line, when present. |
+| `retry` | `number \| undefined` | SSE `retry:` line (ms), when present. |
 
 ---
 
@@ -652,20 +484,32 @@ Example JSON (TypeScript camelCase keys):
 
 | Field | Type | Description |
 |---|---|---|
-| `kind` | `string` | Event type, e.g. `"connection.connected"`. |
-| `deploymentId` | `string` | Deployment that received the event. |
-| `payload` | `Record<string, unknown>` | Event-specific payload. |
-| `timestamp` | `string` | ISO 8601 timestamp. |
+| `id` | `string` | Event UUID. |
+| `type` | `string` | Event type, e.g. `"connection.connected"`. |
+| `occurredAt` | `string` | ISO 8601 timestamp. |
+| `data` | `Record<string, unknown>` | Event-specific payload. |
 
 ---
 
-### Identity
+### Integration
 
 | Field | Type | Description |
 |---|---|---|
-| `userId` | `string` | Vendo user UUID. |
-| `email` | `string \| null` | User email if available. |
-| `tenantId` | `string` | Tenant UUID. |
+| `slug` | `string` | Canonical integration slug. |
+| `name` | `string` | Human-readable name. |
+| `description` | `string` | Short marketing description. |
+| `category` | `string` | Category. |
+| `logoUrl` | `string \| null` | Logo URL. |
+| `brandColor` | `string \| null` | Brand hex color. |
+| `docsUrl` | `string \| null` | Documentation URL. |
+| `supportedProfiles` | `string[]` | Profiles this integration supports. |
+| `defaultProfile` | `string` | Default profile. |
+| `enabled` | `boolean` | Whether enabled in the catalog. |
+| `featured` | `boolean` | Whether featured in the dashboard. |
+
+To get BYOK env-var names for an integration, call
+`vendo.integrations.envVars(slug)`. The names are not on the `Integration`
+interface.
 
 ---
 
@@ -674,15 +518,17 @@ Example JSON (TypeScript camelCase keys):
 | Class | Extends | When thrown |
 |---|---|---|
 | `VendoError` | `Error` | Base class for all SDK errors. |
-| `AuthError` | `VendoError` | Bad or expired API key. |
-| `NotConnected` | `VendoError` | Provider not connected or env var missing. Carries `slug` and `suggestedEnvVars`. |
-| `NeedsReauth` | `VendoError` | Connection exists but requires re-authorization. |
-| `BalanceExhausted` | `VendoError` | Credit balance is zero. |
-| `SpendCapExceeded` | `VendoError` | A spend cap was hit. |
-| `RateLimited` | `VendoError` | Too many requests. Carries `retryAfter`. |
-| `UpstreamError` | `VendoError` | Upstream provider returned an error. |
-| `ValidationError` | `VendoError` | Input failed validation (e.g. bad webhook signature). |
-| `IdempotencyConflict` | `VendoError` | Duplicate idempotency key with different body. |
-| `VendoOnlyFeature` | `VendoError` | Called a Vendo-only method in OSS mode. |
-| `IdentityNotPresent` | `VendoError` | `forRequest()` called without `X-Vendo-User-JWT` header. |
-| `VendoTimeout` | `VendoError` | Operation exceeded the timeout. |
+| `AuthError` | `VendoError` | `app_unknown` / `app_revoked` / `app_expired`. |
+| `NotConnected` | `VendoError` | `binding_missing` / `connection_revoked`. Carries `slug`, `suggestedFix`. |
+| `NeedsReauth` | `VendoError` | `connection_needs_reauth`. Carries `connectUrl`. |
+| `BalanceExhausted` | `VendoError` | `balance_exhausted`. |
+| `SpendCapExceeded` | `VendoError` | `spend_cap_daily` / `spend_cap_monthly`. Carries `retryAfter`. |
+| `RateLimited` | `VendoError` | `upstream_rate_limited`. Carries `retryAfter`. |
+| `UpstreamError` | `VendoError` | `upstream_error`. |
+| `ValidationError` | `VendoError` | `validation_failed` (e.g. bad webhook signature). |
+| `IdempotencyConflict` | `VendoError` | `idempotency_conflict`. |
+| `VendoOnlyFeature` | `VendoError` | `vendo_only_feature` — called a Vendo-only method in OSS mode. |
+| `IdentityNotPresent` | `VendoError` | `identity_not_present` — `forRequest()` called without `X-Vendo-User-JWT`. |
+
+Every `VendoError` instance carries `code`, `message`, and when applicable
+`status`, `slug`, `connectUrl`, `retryAfter`, `suggestedFix`.

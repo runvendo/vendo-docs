@@ -25,3 +25,18 @@ This section is that model. Each page is written from the perspective of a tool 
 - [Logs and observability](/docs/infrastructure/logs-and-observability) — where to look when something is wrong.
 - [Scaling and limits](/docs/infrastructure/scaling-and-limits) — resource ceilings.
 - [Isolation](/docs/infrastructure/isolation) — what's per-tenant, what's shared.
+- [Background workers](/docs/infrastructure/background-workers) — the cron workers whose names appear in logs and support tickets.
+
+## Vendo subdomain inventory
+
+A quick map of which Vendo-owned hosts do what. Your tool generally only talks to the three at the top.
+
+| Host | Purpose |
+|---|---|
+| `{tenant}-{deploy}.vendo.run` (or legacy `{deploy}.{tenant}.vendo.run`) | Your deployed tool's public URL. Served by `vendo-app-proxy`. |
+| `{provider}-proxy.vendo.run` | Provider proxies (OpenAI, Anthropic, OpenRouter, Gemini, ElevenLabs, AssemblyAI, MuAPI, Telegram, Composio). |
+| `credentials.vendo.run` | OAuth token vending for refresh-rotating profiles. |
+| `hooks.vendo.run` | Inbound webhook surface (Telegram bot updates today; more providers later). Verifies the upstream signature, signs an outbound envelope, and forwards to your deployment. |
+| `cdn.vendo.run` | Public read-only R2 bucket. Serves immutable content-hashed assets uploaded by the platform. |
+| `downloads.vendo.run` | Public read-only R2 bucket. Serves desktop-app binaries (`cap`, `jan`, `openscreen`, `voicebox`, `clicky`, `logseq`). |
+| `vendo.run` | The Vendo dashboard and HTTP API. |

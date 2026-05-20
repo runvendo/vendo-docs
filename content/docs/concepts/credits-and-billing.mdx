@@ -38,7 +38,7 @@ cost = upstream_unit_cost × quantity × (1 + margin_pct / 100)
 
 - `upstream_unit_cost` comes from a rates table Vendo keeps in sync with each provider. For LLMs it's per million tokens; for TTS it's per character; for transcription it's per second.
 - `quantity` is what the upstream returned in the response (input + output tokens, characters, seconds).
-- `margin_pct` is Vendo's markup. The current global default is 20%, applied to every call. Individual integrations can override; some tenants have negotiated rates.
+- `margin_pct` is Vendo's markup. The cascade is six levels — `tenant_meter`, `tenant_integration`, `tenant`, `meter`, `integration`, `global` (in that order); the narrowest match wins. The global default is 20%, but most calls hit a narrower row first (negotiated tenant rates or per-integration overrides), so the actual margin a tenant sees varies.
 
 You don't set rates or margin from `vendo.yaml`. The public pricing page at `vendo.run/pricing` reads live from the rates table, so what a tenant sees on the marketing site is what they'll pay.
 
@@ -57,11 +57,13 @@ This is purely advisory. The proxy is the enforcer — it'll 402 a metered call 
 
 `vendo.billing.balance()` is a Vendo-only feature; it raises `VendoOnlyFeature` in OSS mode. The OSS mode (no `VENDO_API_KEY`) doesn't go through the proxy and there's no balance to read — it's the tenant's own provider keys.
 
-## Suspension is gentle
+## Suspension is gentle (until day 90)
 
-When a tenant runs out of credits, their deployment goes through a state machine: `running → suspending → suspended → resuming → running`. The container is stopped, the database is paused (Neon's branch-pause feature), the public URL serves a status page. Everything is preserved.
+When a tenant runs out of credits, their deployment goes through a state machine: `running → suspending → suspended → resuming → running`. The container is stopped, the database is paused (where the integration supports branch-pause), the public URL serves a status page. Everything is preserved.
 
 A top-up via Stripe webhook auto-resumes any deployment suspended for `insufficient_credits`. Tenants who manually pause stay paused — Vendo doesn't override a deliberate decision.
+
+Suspension is not infinite. The `suspension-reaper` worker warns the tenant at day 83 and day 89, and at day 90 transitions a still-suspended deployment through `destroying → destroyed`. Once destroyed, data is gone and the deployment must be reinstalled from scratch.
 
 For your tool, this means: write your code assuming the deployment can be paused and resumed at any time, with no warning to the running container. Persist anything you care about to a database or an R2 bucket. The [Build a tool](/docs/build-a-tool) section covers what is and isn't preserved across suspend cycles.
 

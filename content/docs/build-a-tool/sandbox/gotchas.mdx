@@ -50,18 +50,20 @@ if conn is None:
 
 `NotConnected` is a different beast — it's raised by `vendo.data.execute(action, args)` when the action's required connection is missing. The two paths surface the same condition at different layers.
 
-## 4. Default request timeout is 5 seconds
+## 4. Timeouts propagate from the underlying HTTP client
 
-Every SDK call has a default 5s timeout. On overrun the SDK raises `VendoTimeout`. **Hung requests should be impossible** — if you see "Loading..." forever in your tool's UI, the backend handler is either blocking on something other than the SDK or swallowing the exception.
-
-Wrap your handler:
+Neither SDK defines a `VendoTimeout` class. When an HTTP request takes too long, the SDK lets the underlying timeout error bubble up unchanged: Python raises `httpx.TimeoutException` (or `socket.timeout` for the stdlib client); JS / TS raises `AbortError` from `fetch`. Catch those if you want to convert a slow Vendo API call into a controlled response.
 
 ```python
+import httpx
+
 try:
     conn = vendo.connections.get("supabase")
-except vendo.VendoTimeout:
+except httpx.TimeoutException:
     return JsonResponse({"error": "vendo_api_timeout"}, status=503)
 ```
+
+**Hung requests should be uncommon** — if you see "Loading..." forever in your tool's UI, the backend handler is most likely blocking on something other than the SDK or swallowing the timeout.
 
 ## 5. `VENDO_API_KEY` isn't always set
 
@@ -71,13 +73,7 @@ In practice the sandbox always has the key by the time the agent boots. But if y
 
 ## 6. Reading sandbox logs
 
-`print(...)` from your tool code lands in the sandbox's stdout. To tail it from your local machine while the customize chat is open:
-
-```bash
-# Get the sandbox ID for a deployment (from the customize chat UI or DB).
-# Then tail the broker that forwards sandbox logs:
-wrangler tail customize-sandbox-broker --format pretty | grep '<sandbox_id>'
-```
+`print(...)` from your tool code lands in the sandbox's stdout. The customize chat surfaces process output in its **Logs** tab; for a deployed tool, use the **Logs** tab on the deployment detail page or follow [`inspecting-deployment-logs`](/docs/guides) for the underlying log sources (Supabase `deploy_logs`, Railway compute, Cloudflare `app-proxy`).
 
 Always flush:
 
@@ -89,7 +85,7 @@ print(f"got conn: {conn}", flush=True)
 console.log(`got conn:`, conn);  // auto-flushed in Node
 ```
 
-Without `flush=True` in Python, buffered output won't reach the broker until the process exits.
+Without `flush=True` in Python, buffered output won't reach the log stream until the process exits.
 
 ## 7. Curl the deployment endpoint directly when debugging
 
@@ -98,7 +94,7 @@ Don't deploy-and-pray. From your local machine you can hit the live deployment U
 ```bash
 SESSION=$(infisical run --env dev --projectId b366cac7-1716-47a0-9617-f335500f6dee -- ./bin/repo dev:session --json)
 COOKIE=$(echo "$SESSION" | jq -r .cookie_header)
-curl -H "Cookie: $COOKIE" "https://<deployment_slug>.<tenant_slug>.vendo.run/api/<your_endpoint>"
+curl -H "Cookie: $COOKIE" "https://<deployment_slug>.vendo.run/api/<your_endpoint>"
 ```
 
 This is the fastest way to confirm an endpoint hangs vs. returns 500 vs. returns a malformed body. The customize sandbox runs on a preview URL — the pattern is the same; substitute the preview hostname.

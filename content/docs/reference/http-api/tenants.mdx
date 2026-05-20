@@ -1,0 +1,234 @@
+---
+title: Tenants and users
+description: Create or rename the calling user's workspace, upload logos and avatars, read profile.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The `/api/tenants/*` and `/api/user/*` endpoints back the workspace settings page. They're session-authenticated and operate on the caller's own tenant + profile only — there is no admin tenant CRUD surface in the public API.
+
+## `POST /api/tenants`
+
+Create the calling user's workspace. A user may have at most one production tenant — second-create returns `409`.
+
+### Auth
+
+Session cookie.
+
+### Request body
+
+```json
+{
+  "name": "Acme Inc",
+  "slug": "acme",
+  "isPersonal": false
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `name` | `string` | Workspace name |
+| `slug` | `string` | 2–20 chars, lowercase alphanumerics + hyphens, no leading/trailing hyphen, not in the reserved-tenants list |
+| `isPersonal` | `boolean` | Defaults to `false` |
+
+### Response: `201 Created`
+
+```json
+{
+  "id": "00000000-0000-0000-0000-000000000000",
+  "name": "Acme Inc",
+  "slug": "acme",
+  "ownerId": "00000000-0000-0000-0000-000000000001",
+  "isPersonal": false,
+  "referralCode": "…",
+  "slugChosen": false
+}
+```
+
+(Full `tenants` row.)
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `400` | `{ "message": "Invalid name or slug" }` | Slug fails validation |
+| `400` | `{ "message": "\"<slug>\" is reserved by Vendo. Pick a different workspace URL.", "code": "SLUG_RESERVED" }` | Slug in the reserved list |
+| `401` | `{ "message": "Unauthorized" }` | No session |
+| `409` | `{ "message": "You already have a workspace" }` | User already owns a production tenant |
+| `409` | `{ "message": "This workspace URL is already taken" }` | Slug collision |
+| `429` | `{ "message": "Rate limit exceeded" }` | `tenantLimiter` exceeded |
+| `500` | `{ "message": "Internal server error" }` | Vendo bug |
+
+## `GET /api/tenants/check-slug`
+
+Live availability check for workspace slugs. Used by the deploy wizard so users get immediate "taken" feedback instead of discovering the conflict at create time.
+
+### Auth
+
+Session cookie.
+
+### Query parameters
+
+| Param | Description |
+|---|---|
+| `slug` | Required. Trimmed and lowercased server-side. |
+
+### Responses
+
+- `200 { "available": true }` — free to use
+- `200 { "available": false, "code": "SLUG_TAKEN" }` — owned by another tenant
+- `400 { "available": false, "code": "INVALID_SLUG", "error": "..." }` — slug fails the regex
+- `400 { "available": false, "code": "SLUG_RESERVED", "error": "..." }` — slug in the reserved list
+- `401 { "message": "Unauthorized" }` — no session
+
+The caller's own slug never counts as taken.
+
+## `GET /api/tenants/me`
+
+Returns the full `tenants` row for the caller's production tenant.
+
+### Auth
+
+Session cookie.
+
+### Response: `200 OK`
+
+The full tenant row (id, slug, name, ownerId, isPersonal, referralCode, slugChosen, logoUrl, …).
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `401` | `{ "message": "Unauthorized" }` | No session |
+| `404` | `{ "message": "No workspace" }` | User has no production tenant |
+| `500` | `{ "message": "Internal server error" }` | Vendo bug |
+
+## `PATCH /api/tenants/me`
+
+Update name, slug (only if not yet chosen), or clear the logo.
+
+### Request body
+
+```jsonc
+{
+  "name": "Acme Inc",                  // optional, 1–100 chars
+  "slug": "acme",                      // optional, 2–20 chars; rejected if slugChosen=true
+  "clearLogo": true                    // optional, removes logo_url
+}
+```
+
+At least one of `name`, `slug`, `clearLogo` must be set.
+
+### Response: `200 OK`
+
+Updated `tenants` row.
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `400` | `{ "message": "Workspace name must be 1–100 characters" }` | Bad name |
+| `400` | `{ "message": "Slug must be 2-20 characters, lowercase alphanumeric and hyphens" }` | Bad slug |
+| `400` | `{ "message": "Workspace URL cannot be changed after creation" }` | Caller already set `slugChosen=true` |
+| `400` | `{ "message": "No changes" }` | All optional fields missing |
+| `401` | `{ "message": "Unauthorized" }` | No session |
+| `404` | `{ "message": "No workspace" }` | No production tenant |
+| `409` | `{ "message": "This workspace URL is already taken" }` | Slug collision |
+| `500` | `{ "message": "Internal server error" }` | Vendo bug |
+
+## `POST /api/tenants/me/logo`
+
+Upload a workspace logo. `multipart/form-data` with a `file` part. Max 2 MB, validated via magic bytes (JPEG / PNG / WebP / GIF only — `Content-Type` is ignored).
+
+### Response: `200 OK`
+
+```json
+{
+  "logoUrl": "https://…/storage/v1/object/public/avatars/tenant/<tenant_id>/<id>.png",
+  "tenant": { "id": "…", "logoUrl": "https://…", "...": "…" }
+}
+```
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `400` | `{ "message": "Missing file" }` | `file` part absent |
+| `400` | `{ "message": "Image must be 2MB or smaller" }` | File over the size cap |
+| `400` | `{ "message": "Use JPEG, PNG, WebP, or GIF" }` | Magic-byte check failed |
+| `401` | `{ "message": "Unauthorized" }` | No session |
+| `404` | `{ "message": "No workspace" }` | No production tenant |
+| `500` | `{ "message": "<storage error>" }` | Upload to Supabase storage failed |
+
+## `GET /api/user/me`
+
+Returns the calling user's profile snapshot.
+
+### Auth
+
+Session cookie.
+
+### Response: `200 OK`
+
+```json
+{
+  "id": "00000000-0000-0000-0000-000000000000",
+  "email": "user@example.com",
+  "displayName": "Jane Doe",
+  "avatarUrl": "https://…"
+}
+```
+
+`id` is the raw Supabase UUID. `displayName` and `avatarUrl` come from `user_metadata` and may be empty strings.
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `401` | `{ "message": "Unauthorized" }` | No session |
+| `500` | `{ "message": "Internal server error" }` | Vendo bug |
+
+## `PATCH /api/user/me`
+
+Update display name or clear the avatar URL.
+
+### Request body
+
+```jsonc
+{
+  "displayName": "Jane Doe",   // optional, ≤ 120 chars after trim
+  "clearAvatar": true           // optional, removes avatar_url from user_metadata
+}
+```
+
+### Response: `200 OK`
+
+Same shape as `GET /api/user/me` with the updated values.
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `400` | `{ "message": "Display name must be 120 characters or less" }` | Too long |
+| `400` | `{ "message": "<supabase auth error>" }` | Auth update failed |
+| `401` | `{ "message": "Unauthorized" }` | No session |
+| `500` | `{ "message": "Internal server error" }` | Vendo bug |
+
+## `POST /api/user/avatar`
+
+Upload a user avatar. Same multipart shape, same size cap, same magic-byte validation as `/api/tenants/me/logo`. Updates `user_metadata.avatar_url` on the Supabase user.
+
+### Response: `200 OK`
+
+```json
+{ "avatarUrl": "https://…/storage/v1/object/public/avatars/user/<user_id>/<id>.png" }
+```
+
+### Errors
+
+Same shape as `/api/tenants/me/logo` — `Missing file`, `Image must be 2MB or smaller`, `Use JPEG, PNG, WebP, or GIF`, `Unauthorized`, plus 5xx on storage failures.
+
+### Related
+
+- [Index — Auth model](./) — credential types and the endpoint auth matrix
+- [Deploy](deploy) — `POST /api/deploy` requires `slugChosen = true`

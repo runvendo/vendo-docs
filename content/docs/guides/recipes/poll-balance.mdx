@@ -14,12 +14,14 @@ Balances are reported in **micros** (1 USD = 1,000,000 micros). Divide by `1_000
 ## Read the balance
 
 ```python
-import vendo
+from vendo import Vendo
 from vendo.errors import VendoOnlyFeature
+
+client = Vendo()
 
 def get_balance():
     try:
-        balance = vendo.billing.balance()
+        balance = client.billing.balance()
         return {
             "credits_remaining_usd": balance.credits_remaining_micros / 1_000_000,
             "currency": balance.currency,
@@ -28,6 +30,8 @@ def get_balance():
     except VendoOnlyFeature:
         return {"credits_remaining_usd": None, "message": "billing not available in OSS mode"}
 ```
+
+> `vendo.billing` is also exposed as a lazy module-level singleton — `vendo.billing.balance()` works once `VENDO_API_KEY` is set — but the explicit `Vendo()` client makes the dependency obvious and is what every other recipe on this page uses.
 
 ```typescript
 import { Vendo, VendoOnlyFeature } from "@vendodev/sdk";
@@ -58,9 +62,9 @@ async function getBalance() {
 ```python
 MIN_BALANCE_MICROS = 500_000  # $0.50
 
-def run_expensive_action(client):
+def run_expensive_action(client: Vendo):
     try:
-        balance = vendo.billing.balance()
+        balance = client.billing.balance()
     except VendoOnlyFeature:
         balance = None
 

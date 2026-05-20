@@ -10,12 +10,12 @@ Every call your tool makes through Vendo's integration proxy (`*-proxy.vendo.run
 ## The key format
 
 ```
-vendo_sk_<random-32-char-base62>
+vendo_sk_<random-32-char-suffix>
 ```
 
-The plaintext is returned exactly once — when the key is first issued — and is never persisted in cleartext anywhere in Vendo's infrastructure. What is stored is the SHA-256 hash of the plaintext. At request time, the proxy hashes the bearer it received and looks the hash up to find the key's metadata. A stolen key cannot be re-derived from any database row.
+The suffix is a 32-character `nanoid`, drawn from the URL-safe alphabet `A-Za-z0-9_-` (64 symbols). The full plaintext bearer is returned exactly once — when the key is first issued. The database holds the SHA-256 hash of the bearer in `keys.key_hash` for the proxy's O(1) lookup; the prefix (`vendo_sk_<id>`) is also recorded as a non-secret display identifier so the dashboard can show the key in lists without needing the cleartext. At request time, the proxy hashes the bearer it received and looks the hash up to find the key's metadata. A stolen bearer cannot be reconstructed from the hash.
 
-There is no way to retrieve a key after issuance. Lost keys are revoked and replaced; not recovered.
+There is no way to retrieve a bearer after issuance. Lost keys are revoked and replaced, not recovered.
 
 ## Authentication on every request
 
@@ -62,6 +62,11 @@ A key can carry a spend cap (a hard ceiling on credit-equivalent spend, scoped t
 - **Leaked deployment key.** An attacker with a `vendo_sk_*` key can spend the tenant's credits up to the key's cap, but only against the providers the deployment's bindings allow. They cannot reach other tenants, cannot mint identity tokens, cannot read OAuth refresh tokens, cannot read the underlying real provider keys.
 - **Replay across deployments.** A key for deployment A cannot be used to access deployment B's connections or balance. Both the database resolution and the binding lookup key off the deployment that owns the key.
 - **Cross-tenant impersonation via headers.** Inbound `X-Vendo-*` headers are stripped by the app proxy on user-facing traffic, and ignored by the integration proxy on tool-facing traffic.
+- **Path-traversal into other upstream endpoints.** Before any URL parsing, the integration proxy rejects requests whose inbound path contains raw `..` or `.` segments, so a caller can't trick the adapter into rewriting the upstream URL to an endpoint it never named.
+
+## Inbound webhook signatures
+
+Tool-facing keys aren't the only authentication surface. Inbound webhooks delivered to `hooks.vendo.run` (e.g. Telegram updates) carry a provider-set signing secret that Vendo issues at connection time and stores on the connection metadata (see [Secret handling](/docs/security/secret-handling)). The hooks worker constant-time compares the inbound signature header (e.g. `X-Telegram-Bot-Api-Secret-Token`) against the stored secret; a missing or mismatched value is rejected with HTTP 412 before any further processing.
 
 ## What this does not protect against
 

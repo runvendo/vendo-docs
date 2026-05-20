@@ -65,6 +65,7 @@ The template JSON is what the deploy worker reads to provision a tenant instance
       "role": "web",
       "image": "ghcr.io/<YOUR_GH_USERNAME>/<YOUR_TOOL_SLUG>:1.0.0",
       "port": 3000,
+      "healthPath": "/healthz",
       "startCommand": "yarn start",
       "env": {
         "DATABASE_URL": "${database_url}",
@@ -85,8 +86,13 @@ The template JSON is what the deploy worker reads to provision a tenant instance
   "secrets": {
     "app_secret": { "type": "random_hex", "length": 32 }
   },
-  "r2Storage": { "name": "files" },
-  "readiness": { "endpoint": "/healthz", "timeoutSeconds": 300 },
+  "r2Storage": true,
+  "readiness": {
+    "healthPath": "/healthz",
+    "expectedBootTimeSec": 60,
+    "maxRetries": 60,
+    "retryIntervalSec": 5
+  },
   "integrations": [
     { "provider": "openrouter" }
   ],
@@ -101,16 +107,20 @@ The template JSON is what the deploy worker reads to provision a tenant instance
     }
   ],
   "wizardLayout": {
-    "groups": [
+    "version": 1,
+    "subSteps": [
       {
+        "id": "connect-ai",
         "title": "Connect AI",
-        "items": [{ "type": "integration", "provider": "openrouter" }]
+        "sections": [
+          { "type": "integration", "providers": ["openrouter"] }
+        ]
       },
       {
+        "id": "configure",
         "title": "Configure",
-        "items": [
-          { "type": "input", "key": "DEFAULT_LOCALE" },
-          { "type": "input", "*": true }
+        "sections": [
+          { "type": "wizard_inputs", "groups": ["*"] }
         ]
       }
     ]
@@ -129,11 +139,11 @@ The template JSON is what the deploy worker reads to provision a tenant instance
 
 Things worth knowing about every block:
 
-- **`services[]`** runs one Railway container per entry. One service must have `role: "web"` — that's what the deploy worker exposes on `<deployment-slug>.<tenant-slug>.vendo.run`. Mount a Railway volume for anything your CRM persists outside Postgres (uploads, attachments) and pair it with R2 for cross-deploy durability.
+- **`services[]`** runs one Railway container per entry. One service must have `role: "web"` — that's what the deploy worker exposes on `<tenant-slug>-<deployment-slug>.vendo.run`. Each service declares its own `healthPath`; the top-level `readiness` block configures the boot-time polling loop. Mount a Railway volume for anything your CRM persists outside Postgres (uploads, attachments) and pair it with R2 for cross-deploy durability.
 - **`${...}` placeholders** are resolved by the deploy worker during the `resolve_env` phase. `${database_url}`, `${r2_*}`, `${app_secret}`, `${domain}`, `${admin_email}`, `${admin_password}` are platform-provided. The full list is in [Manifest format § Env-var placeholders](/docs/deploy-and-publish/publish-to-catalog/manifest#env-var-placeholders).
 - **`integrations: [...]`** lists every provider your tool calls through Vendo's proxy. For a CRM that ships an "AI assistant" feature, `openrouter` is the canonical choice — it gets you `OPENROUTER_API_KEY` (a `vendo_sk_*` proxy key) and `OPENROUTER_BASE_URL` (`https://openrouter-proxy.vendo.run/v1`) injected at boot, so an unmodified OpenAI SDK pointed at those env vars meters through Vendo automatically. If your tool calls no third-party providers, set `"integrations": []` — empty array, not omitted.
 - **`adminBootstrap.authMode: "api_seed"`** lets the deploy worker create the admin account by POSTing to a seed endpoint your tool implements. `apps_catalog.auth_mode` must agree with this value — see the next step.
-- **`wizardLayout`** controls the configure-step UX. Twenty's pattern — providers first, then config — is the most common and works for almost every CRM. Add a `{ "type": "input", "*": true }` sweep in your last group so any `userInputs[]` key you forgot to place explicitly still appears.
+- **`wizardLayout`** controls the multi-sub-step Configure UX (schema in `web/src/lib/wizard-layout.ts`). It declares `version: 1`, a `subSteps[]` array, and per-sub-step `sections[]` of discriminated types: `deployment_name`, `workspace`, `admin_credentials`, `wizard_inputs` (with `groups: string[]`), `integration` (with `providers: string[]`), and `tool_extras`. The `["*"]` sweep on `groups` / `providers` is the safety net — it picks up any `userInputs[]` key or `integrations[]` provider you didn't place explicitly in an earlier sub-step. Leave one sweep in your last sub-step so a forgotten field still renders.
 
 Save the file as `<YOUR_TOOL_SLUG>/1.0.0.json` in a fork of [`runvendo/vendo-templates`](https://github.com/runvendo/vendo-templates).
 
@@ -271,7 +281,7 @@ Once the migration applies, your tool appears at `vendo.run/tools/<YOUR_TOOL_SLU
 2. **The Deploy button works.** Click it. The wizard should advance through Connect → Configure → Pay → Launch. Twenty's pattern — one OpenRouter binding then a Configure step — should appear cleanly. If `wizardLayout` has a bug, you'll see misplaced fields or a missing step here.
 3. **A real deploy succeeds.** Pick a deployment slug, launch, and watch `deploy_logs` advance from `validate_template` to `notify_user`. Common first-deploy failures are:
    - **Image pull error** — registry credentials weren't wired, or the tag isn't public yet.
-   - **Healthcheck timeout** — your container is up but `/healthz` doesn't respond within `readiness.timeoutSeconds` (default 300s). For CRMs with heavy startup work, bump the timeout or add a placeholder healthcheck that returns 2xx immediately and a deeper one for in-cluster orchestration.
+   - **Healthcheck timeout** — your container is up but `/healthz` doesn't respond within `readiness.maxRetries * readiness.retryIntervalSec` (the example above is `60 * 5 = 300s`). For CRMs with heavy startup work, bump `expectedBootTimeSec` / `maxRetries` or add a placeholder healthcheck that returns 2xx immediately and a deeper one for in-cluster orchestration.
    - **Admin seed failure** — the `seedEndpoint` in your manifest doesn't match the real route, or the payload schema disagrees.
 
 If anything goes wrong, [Logs and debugging](/docs/deploy-and-publish/operate/logs-and-debugging) and the `inspecting-deployment-logs` skill cover how to read across the three log surfaces (Supabase `deploy_logs`, Railway compute, Cloudflare app-proxy).

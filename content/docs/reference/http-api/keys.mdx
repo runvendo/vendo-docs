@@ -1,0 +1,99 @@
+---
+title: Keys
+description: List and revoke the tenant's proxy keys (vendo_sk_*).
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+`/api/keys` is the tenant-level CRUD surface for the `vendo_sk_*` API keys that authenticate against the Vendo proxy. To mint a new key on an existing app, use [`POST /api/apps/{id}/keys`](apps). To mint a brand new app + key in one call, use [`POST /api/deploy`](deploy).
+
+## `GET /api/keys`
+
+List every active proxy key for the caller's tenant. Keys span all apps and connections owned by the tenant.
+
+### Auth
+
+Session cookie.
+
+### Response: `200 OK`
+
+```json
+{
+  "keys": [
+    {
+      "id": "00000000-0000-0000-0000-000000000000",
+      "scope_mode": "app",
+      "connection_id": null,
+      "app_id": "00000000-0000-0000-0000-000000000001",
+      "display_name": "Hermes (support-bot)",
+      "prefix": "vendo_sk_a1b2",
+      "created_at": "2026-05-01T12:00:00Z",
+      "last_used_at": "2026-05-20T09:34:00Z"
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | `string` | UUID of the `keys` row |
+| `scope_mode` | `string` | `"app"` (app-scoped, the deploy default) or `"connection"` (connection-scoped, issued via `POST /api/connections/{id}/keys`) |
+| `connection_id` | `string \| null` | Set only when `scope_mode == "connection"` |
+| `app_id` | `string \| null` | Set only when `scope_mode == "app"` |
+| `display_name` | `string \| null` | Human label given at issue time |
+| `prefix` | `string` | First 12 chars of the plaintext key — safe to surface in UI |
+| `created_at` | `string` | ISO 8601 timestamp |
+| `last_used_at` | `string \| null` | Last time the proxy authenticated this key |
+
+The bytea `key_hash` column is **never** projected — the full plaintext can only be retrieved at issue time.
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `401` | `{ "error": "unauthorized" }` | No session |
+| `404` | `{ "error": "no_tenant" }` | Signed-in user has no production tenant |
+
+## `DELETE /api/keys/{id}`
+
+Revoke a proxy key. The `keys.revoked_at` column is set and the KV entry is purged so the proxy stops accepting the bearer immediately.
+
+### Auth
+
+Session cookie. Caller must own the tenant that owns the key.
+
+### Response: `200 OK`
+
+```json
+{ "revoked_at": "2026-05-20T12:00:00Z" }
+```
+
+### Errors
+
+| Status | Body | Cause |
+|---|---|---|
+| `401` | `{ "error": "unauthorized" }` | No session |
+| `404` | `{ "error": "no_tenant" }` | Signed-in user has no production tenant |
+| `404` | `{ "error": "not_found" }` | Key doesn't exist or isn't owned by this tenant |
+
+<Callout type="warn">
+  Revocation is **immediate** for the proxy (KV delete) but the DB is also updated. If the KV delete fails, the DB row is still marked revoked — `resyncAuthorizationKeys` reconciles KV on the next sweep, so the bearer will stop working at most a few seconds late.
+</Callout>
+
+## Where keys are issued
+
+Keys are minted by other endpoints; `/api/keys` is read+revoke only.
+
+| Path | Issues a key when |
+|---|---|
+| `POST /api/deploy` | Every successful deployment mints one App Key (scope `app`) |
+| `POST /api/apps/{id}/keys` | Add an extra App Key to an existing app (rotation, CLI use, etc.) |
+| `POST /api/connections/{id}/keys` | Add a connection-scoped key for a single provider |
+
+The plaintext is returned exactly once at issue. Vendo's session-role reads never expose it again — the canonical column in the `keys` table is the SHA-256 hash.
+
+### Related
+
+- [Apps](apps) — `POST /api/apps/{id}/keys` mints additional App Keys
+- [Connections (runtime)](connections) — App Keys are how deployed tools authenticate against the proxy
+- [Index — Auth model](./) — credential types and the endpoint auth matrix

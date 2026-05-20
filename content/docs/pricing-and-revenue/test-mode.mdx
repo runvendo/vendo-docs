@@ -22,17 +22,18 @@ Do **not** use a test tenant when:
 
 ## What a test tenant changes
 
-A `test = true` tenant gets these exemptions:
+A tenant flagged `is_test = true` gets these exemptions:
 
 | Surface | Behavior on a test tenant |
 |---|---|
-| `POST /api/deploy` billing gate | Bypassed — no positive-balance requirement. Deploys at $0. |
-| Proxy reserve / settle | Reserve still runs but never blocks (treated as unlimited balance). Settle still records the `usage_events` row but does not deduct from the wallet. |
-| Suspension on zero | Does not happen — the watchdog skips tenants with `test = true`. |
-| Stripe customer requirement | Not enforced — a test tenant can exist without a `stripe_customers` row. |
-| Auto-reload | Not applicable — no card on file is needed. |
+| `POST /api/deploy` billing gate | Bypassed — no Stripe-customer or positive-balance requirement (`web/src/app/api/deploy/route.ts` checks `!tenant.isTest && !adminMode` before gating). Deploys at $0. |
+| Suspension on zero | Does not happen — the `credit-watchdog` cron skips tenants with `is_test = true` and routes their Stripe operations through `STRIPE_TEST_SECRET_KEY`. |
+| Stripe customer requirement | Not enforced at deploy. A test tenant can exist without a `stripe_customers` row. |
+| Auto-reload | Card-backed reload is not required to deploy. If the tenant does have a card, the watchdog uses the test-mode Stripe key. |
 
-Everything else behaves identically: the same KV cache, the same DNS, the same Railway provisioning, the same `app_connection_bindings` resolution. Your tool cannot tell from inside its container whether the tenant is a test tenant — there is no header, no env var, and no SDK helper for "is this real money?". If you genuinely need that distinction in your tool's logic, you're modeling something wrong.
+Everything else behaves identically — including the proxy. The proxy code path has **no `is_test` branch**: reserve/settle, `record_billed_usage`, and rate-miss enforcement run the same way they do for a real tenant. A proxy call against an empty wallet returns `402` regardless of the test flag. Test tenants only avoid the 402 because the test harness (or a Vendo admin) typically seeds their wallet with a credit row directly, not because the proxy carves them out.
+
+Your tool cannot tell from inside its container whether the tenant is a test tenant — there is no header, no env var, and no SDK helper for "is this real money?". If you genuinely need that distinction in your tool's logic, you're modeling something wrong.
 
 ## What an admin user changes
 
@@ -42,13 +43,19 @@ Practically: Vendo staff debugging a tenant's deployment can re-deploy without p
 
 ## How to flag a tenant as test
 
-This is a Vendo-side operation, not something tool authors do from `vendo.yaml`. The flag lives on the `tenants` row:
+This is a Vendo-side operation, not something tool authors do from `vendo.yaml`. The flag lives on the `tenants` row as `is_test` (boolean, default `false`, added in migration `082_is_test_scoping.sql`):
 
 ```sql
-update tenants set test = true where id = '<tenant_id>';
+update tenants set is_test = true where id = '<tenant_id>';
 ```
 
-Setting it requires database access — i.e. you're running locally against a dev Supabase, or you've asked a Vendo admin to flip it on a staging tenant. There is no self-serve UI for it: if a real tenant could mark themselves `test = true`, they could deploy and run for free, which is exactly what the flag is meant to prevent.
+Or, preferred, through the audited admin RPC (`supabase/migrations/124_admin_rpcs.sql`):
+
+```sql
+select admin_set_test_flag('<admin_user_uuid>', '<tenant_id>', true);
+```
+
+Setting it requires database or admin-RPC access — i.e. you're running locally against a dev Supabase, or you've asked a Vendo admin to flip it on a staging tenant. There is no self-serve UI for it: if a real tenant could mark themselves `is_test = true`, they could deploy and run for free, which is exactly what the flag is meant to prevent.
 
 For tool authors who don't have direct DB access, the path is:
 
@@ -62,7 +69,7 @@ For tool authors who don't have direct DB access, the path is:
 
 ## Identifying test tenants from outside
 
-The dashboard renders a small "TEST" badge on a tenant's settings page when `test = true`. The Stripe customer (if one exists) is in test mode, not live mode. Beyond that, there's no public surface for the flag — it's deliberately invisible from the tool's perspective so test runs exercise the same code path as real runs.
+The dashboard renders a small "TEST" badge on a tenant's settings page when `is_test = true`. The Stripe customer (if one exists) is in test mode, not live mode — the `credit-watchdog` selects `STRIPE_TEST_SECRET_KEY` for test tenants and `STRIPE_SECRET_KEY` for everyone else (`workers/credit-watchdog/src/index.ts`). Beyond that, there's no public surface for the flag — it's deliberately invisible from the tool's perspective so test runs exercise the same code path as real runs.
 
 ## What this means for `marketing.pricing`
 
@@ -72,7 +79,7 @@ This is slightly clunky and we may streamline it later. For now, just know: if a
 
 ## Testing the failure modes anyway
 
-Sometimes you specifically want to test "what happens when the wallet runs out". You can't do that on a test tenant — the suspension watchdog skips them. Two options:
+Sometimes you specifically want to test "what happens when the wallet runs out". You can't fully test that on a test tenant — the suspension watchdog skips them, even though the proxy itself will still 402 on an empty wallet. Two options:
 
 1. **Real wallet, tiny amount.** Fund a real tenant with $0.10. Run a few proxy calls. Watch suspension fire when it hits zero.
 2. **Mock the watchdog locally.** The watchdog is a Worker (`workers/credit-watchdog`) — you can run it against a local Supabase with a tenant whose balance you manually set to zero. This is the right path for CI integration tests that need to assert on suspension behavior without spending money.

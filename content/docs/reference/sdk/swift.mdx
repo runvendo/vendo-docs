@@ -31,7 +31,11 @@ Then add `"Vendo"` to your target's dependencies.
 
 ## Public surface
 
-### `Vendo` class
+### `Vendo` actor
+
+`Vendo` is implemented as a Swift `actor` (not a class). The constructor
+throws `VendoError.auth` if `VENDO_API_KEY` is unset and no `apiKey:` is
+passed.
 
 ```swift
 import Vendo
@@ -39,34 +43,46 @@ import Vendo
 // Vendo mode (reads VENDO_API_KEY from env)
 let vendo = try Vendo()
 
-// OSS/BYOK mode
+// OSS/BYOK mode — pass an explicit key (any non-empty string opts into the
+// instance; per-slug BYOK lookups read provider-conventional env vars).
 let vendo = try Vendo(apiKey: "byok")
 
-// Explicit
-let vendo = try Vendo(apiKey: "vendo_sk_...", baseURL: URL(string: "https://vendo.run/api")!)
+// Explicit — note no `/api` suffix on baseURL.
+let vendo = try Vendo(
+    apiKey: "vendo_sk_...",
+    baseURL: "https://vendo.run"
+)
 ```
+
+Sub-API properties are `nonisolated`, so synchronous access does not require
+`await`. Async methods on the actor (e.g. `token`, `forUser`) do.
 
 ### Token methods
 
 ```swift
 try await vendo.token(_ slug: String) -> String
 try await vendo.tokens(_ slugs: [String]) -> [String: String?]
+await vendo.invalidate(_ slug: String)
 ```
 
 ### Scoping
 
 ```swift
-vendo.forRequest(headers: [String: String]) throws -> Vendo  // Vendo mode only
-vendo.forUser(jwt: String) -> Vendo                          // Vendo mode only
+try await vendo.forUser(jwt: String) -> Vendo
+try await vendo.forRequest(headers: [String: String]) -> Vendo  // Vendo mode only
 ```
 
 ### Connect URL
 
 ```swift
-try vendo.connectURL(slug: String, returnTo: String? = nil) -> URL  // Vendo mode only
+try await vendo.connectURL(
+    slug: String,
+    returnTo: String? = nil,
+    state: String? = nil
+) -> URL  // Vendo mode only
 ```
 
-### Sub-APIs
+### Sub-APIs (nonisolated)
 
 ```swift
 vendo.connections    // ConnectionsAPI
@@ -95,53 +111,81 @@ vendo.integrations.envVars(for slug: String) -> [String]  // no network call
 
 ```swift
 try await vendo.billing.balance() -> Balance
-try await vendo.billing.spendCaps() -> [SpendCap]
-try await vendo.billing.usage(period: BillingPeriod) -> Usage
+try await vendo.billing.spendCaps() -> SpendCaps
+try await vendo.billing.usage(period: BillingPeriod = .month) -> AnyCodable
 ```
+
+`SpendCaps` is a single struct holding all four micros fields; it is not an
+array. `usage(period:)` returns the raw JSON wrapped in `AnyCodable` — there
+is no `Usage` type in this SDK.
 
 ### EventsAPI (Vendo mode only)
 
 ```swift
-let stream = try vendo.events.subscribe()  // AsyncThrowingStream<VendoEvent, Error>
+let stream = try vendo.events.subscribe()
+// stream is an EventsAsyncSequence; iterating yields EventStreamMessage.
 
 for try await event in stream {
     print(event.type, event.data)
 }
 ```
 
+`subscribe()` reconnects on transient errors with exponential backoff capped
+at 30 s (override via `maxBackoffSeconds:`).
+
 ### WebhooksAPI
 
+`maxAgeSec` is a **constructor** parameter on `WebhooksAPI` — `verify(...)`
+takes only headers and body.
+
 ```swift
-let webhooks = WebhooksAPI(secret: "whsec_...")
-// or:
-vendo.webhooks.verify(
-    headers: [String: String],
-    body: String,
-    maxAgeSeconds: Int = 300
-) throws -> WebhookEvent
+let webhooks = WebhooksAPI(secret: "whsec_...", maxAgeSeconds: 300)
+let event: WebhookEvent = try webhooks.verify(
+    headers: ["Vendo-Signature": "...", "Vendo-Timestamp": "..."],
+    body: rawBodyString
+)
+```
+
+When constructed without `secret:`, the verifier reads
+`VENDO_WEBHOOK_SECRET` from `ProcessInfo.processInfo.environment`.
+
+### BYOK helpers
+
+```swift
+import Vendo
+
+BYOK.primaryEnvVar(for: "openai")  // "OPENAI_API_KEY"
+BYOK.allEnvVars(for: "slack")      // ["SLACK_BOT_TOKEN", "SLACK_SIGNING_SECRET"]
+BYOK.isOAuthSlug("google")         // Bool
+BYOK.knownSlugs()                  // Set<String>
 ```
 
 ### VendoError enum
 
+`VendoError` is an enum; every case uses labeled associated values.
+
 ```swift
-public enum VendoError: Error {
-    case auth(String)
-    case notConnected(String, String)
-    case needsReauth(String, String, URL?)
-    case balanceExhausted(String)
-    case spendCapExceeded(String)
-    case rateLimited(Int?)
-    case upstream(String)
-    case validation(String)
-    case idempotencyConflict(String)
-    case vendoOnlyFeature(String)
-    case identityNotPresent
-    case other(String)
+public enum VendoError: Error, Sendable {
+    case auth(message: String, code: String)
+    case notConnected(slug: String?, message: String)
+    case needsReauth(slug: String?, message: String, connectURL: String?)
+    case balanceExhausted(message: String)
+    case spendCapExceeded(message: String, retryAfter: Int?)
+    case rateLimited(retryAfter: Int?)
+    case upstream(status: Int, message: String)
+    case validation(message: String)
+    case idempotencyConflict(message: String)
+    case vendoOnlyFeature(featureName: String)
+    case identityNotPresent(message: String)
+    case other(code: String, message: String, status: Int?)
 }
 ```
+
+Use `VendoError.from(status:headers:body:)` to convert a raw HTTP response
+into the right case.
 
 See [Concepts: Errors](/docs/concepts/errors) for usage.
 
 <Callout type="info">
-  The Swift SDK is the only one that exposes a synchronous `envVars(for:)` method on `IntegrationsAPI` — it reads from a bundled catalog and requires no network call.
+  The Swift SDK is the only one that exposes a synchronous `envVars(for:)` method on `IntegrationsAPI` — it reads from the bundled `Resources/byok.json` catalog and requires no network call.
 </Callout>

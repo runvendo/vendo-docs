@@ -11,13 +11,21 @@ That's the whole knob. Read this page once to know which value to pick and what 
 
 ## The field
 
-`marketing` is a JSONB column on the `apps_catalog` table — the same place your tool's name, category, and marketing copy live. In your template manifest (see [Deploy & publish](/docs/deploy-and-publish/publish-to-catalog/manifest)), it's a top-level key:
+`marketing` is a JSONB column on the `apps_catalog` table (`web/src/lib/db/schema.ts` — `marketing: jsonb("marketing").notNull().default({})`) — the same place your tool's name, category, and marketing copy live. **It is not a field on the template manifest** — the manifests in `runvendo/vendo-templates` are JSON files (`{slug}/{version}.json`) and their schema (`cloudflare/deploy-worker/src/schema/manifest.schema.json`) has no `marketing` key. The column is set by a DB seed migration in the Vendo monorepo, typically by a Vendo admin.
 
-```yaml
-marketing:
-  pricing: credits
-  replaces: HubSpot, Salesforce
-  monthlyCost: "~$15/mo for a typical workload"
+Concretely, the seed looks like this (from `supabase/migrations/139_hermes_tool.sql`):
+
+```sql
+INSERT INTO tools (slug, name, ..., marketing) VALUES (
+  'my-tool',
+  'My Tool',
+  ...,
+  jsonb_build_object(
+    'pricing',     'credits',
+    'replaces',    'HubSpot, Salesforce',
+    'monthlyCost', '~$15/mo for a typical workload'
+  )
+);
 ```
 
 The `pricing` field accepts two values:
@@ -71,16 +79,13 @@ If none of the above apply, `free` is fine. The most common shape for `free` is 
 
 ## How to set it
 
-The catalog entry is your template manifest. Phase 7 (Deploy & publish) covers the full manifest; the pricing field is a single line:
+`marketing.pricing` is set in a DB seed migration in the Vendo monorepo, alongside the rest of your catalog row. The templates sync action (`vendo-templates/.github/workflows/sync.yml`) **does not** touch `apps_catalog.marketing` — it writes `tool_releases.wizard_inputs` / `wizard_layout`. So the workflow is:
 
-```yaml
-# template.yaml in the vendo-templates repo
-name: my-tool
-marketing:
-  pricing: credits
-```
+1. Ship your template manifest JSON to `runvendo/vendo-templates`.
+2. Open a PR in the Vendo monorepo with a `supabase/migrations/<n>_<slug>_tool.sql` that inserts (or updates) the `apps_catalog` row with the right `marketing` JSONB, including `pricing`.
+3. Vendo admins typically own this step. If you're not a Vendo admin, ask the team to land the seed.
 
-When the templates sync action runs, it upserts `apps_catalog.marketing` with this JSON. You can also flip it later — admins can update a catalog entry without a new release. But if your tool's billing surface changes (e.g. you add an integration that calls a proxy provider), update the manifest in the same PR and ship a new release.
+You can flip the value later with a follow-up migration — no new release required. But if your tool's billing surface changes (e.g. you add an integration that calls a proxy provider), update the seed in the same PR.
 
 ## What you cannot configure
 
@@ -97,14 +102,15 @@ The lever you have is which integrations your tool uses and how efficiently it u
 
 The `marketing` JSONB has companion fields the dashboard uses to communicate cost to tenants before they install:
 
-```yaml
-marketing:
-  pricing: credits
-  monthlyCost: "$15-25/mo for typical solo use"
-  payAsYouGo: true
-  theyCharge: "free (you pay proxied LLM costs)"
-  replaces: "Notion AI, ChatGPT Plus"
-  savings: "$20/mo"
+```json
+{
+  "pricing":     "credits",
+  "monthlyCost": "$15-25/mo for typical solo use",
+  "payAsYouGo":  true,
+  "theyCharge":  "free (you pay proxied LLM costs)",
+  "replaces":    "Notion AI, ChatGPT Plus",
+  "savings":     "$20/mo"
+}
 ```
 
 These are display strings — tenants see them on the tool's catalog card and detail page. They don't affect billing. Be honest about cost ranges; over-promising "cheap" and watching tenants get sticker-shock after their first heavy day burns trust faster than anything else.

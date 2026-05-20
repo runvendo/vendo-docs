@@ -13,7 +13,7 @@ yarn add @vendodev/sdk
 pnpm add @vendodev/sdk
 ```
 
-**Requirements:** Node 18+, Deno 1.40+, or any modern JS runtime. Zero runtime dependencies.
+**Requirements:** Node 18+, Deno 1.40+, or any modern JS runtime. Zero runtime dependencies. The SDK is server-side — the constructor reads `process.env.VENDO_API_KEY`, so don't instantiate `Vendo` directly in a browser bundle.
 
 ## OSS mode (no account needed)
 
@@ -25,10 +25,12 @@ OPENAI_API_KEY=sk-...
 TELEGRAM_BOT_TOKEN=12345:abcde
 ```
 
+The TypeScript constructor requires a non-empty `apiKey` (it throws `AuthError` otherwise), so in OSS mode pass any placeholder string — `token()` then resolves against BYOK env vars and never sends the placeholder anywhere:
+
 ```typescript
 import { Vendo } from "@vendodev/sdk";
 
-const vendo = new Vendo(); // reads VENDO_API_KEY from env; absent = OSS mode
+const vendo = new Vendo({ apiKey: "byok" }); // OSS-mode placeholder
 
 const openaiKey = await vendo.token("openai");   // returns OPENAI_API_KEY
 const botToken = await vendo.token("telegram");  // returns TELEGRAM_BOT_TOKEN
@@ -36,7 +38,7 @@ const botToken = await vendo.token("telegram");  // returns TELEGRAM_BOT_TOKEN
 
 ## Vendo mode (OAuth refresh + managed keys)
 
-Set `VENDO_API_KEY` from your [Vendo dashboard](https://vendo.run):
+Set `VENDO_API_KEY` from your [Vendo dashboard](https://vendo.run). Keys start with the `vendo_sk_` prefix and are sent as `Authorization: Bearer <key>` to the proxy.
 
 ```bash
 VENDO_API_KEY=vendo_sk_...
@@ -45,7 +47,7 @@ VENDO_API_KEY=vendo_sk_...
 ```typescript
 import { Vendo } from "@vendodev/sdk";
 
-const vendo = new Vendo(); // detects mode from VENDO_API_KEY automatically
+const vendo = new Vendo(); // reads VENDO_API_KEY from env
 
 const openaiKey = await vendo.token("openai");
 
@@ -61,12 +63,14 @@ const balance = await vendo.billing.balance();
 ```typescript
 const vendo = new Vendo({
   apiKey: "vendo_sk_...",
-  baseUrl: "https://vendo.run/api",
+  baseUrl: "https://vendo.run", // default; do NOT append `/api` — every call site already prefixes it
   apiVersion: "2026-05-02",
 });
 ```
 
 ## Bulk tokens
+
+The return type is `Record<string, string | null>` — slugs with no resolvable credential map to `null`:
 
 ```typescript
 const tokens = await vendo.tokens(["openai", "slack", "telegram"]);
@@ -78,6 +82,18 @@ const tokens = await vendo.tokens(["openai", "slack", "telegram"]);
 ```typescript
 import { isVendoMode } from "@vendodev/sdk";
 isVendoMode(); // true if VENDO_API_KEY is set
+```
+
+## Per-slug override (escape hatch)
+
+Set `VENDO_TOKEN_<UPPER_SLUG>` to short-circuit the resolution chain for a specific slug. This wins over both Vendo mode and the BYOK env var, and is useful when testing a custom integration that isn't in the catalog:
+
+```bash
+VENDO_TOKEN_MYTOOL=sk-test-...
+```
+
+```typescript
+await vendo.token("mytool"); // returns the override value
 ```
 
 ## Next steps

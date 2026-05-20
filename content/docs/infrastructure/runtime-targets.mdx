@@ -17,10 +17,10 @@ Tools that need a process to stick around — Twenty CRM, Hermes, Open WebUI, an
 
 ## What Railway gives you
 
-For `deployment` tools, Vendo provisions a fresh Railway project per deployment. That project contains:
+For `deployment` tools, Vendo provisions a fresh Railway project per deployment. The project is created inside one of Vendo's Railway workspaces (the platform bin-packs across a pool because Railway Pro caps each workspace at 100 projects — see [Scaling and limits](/docs/infrastructure/scaling-and-limits)). The project contains:
 
 - One or more services from your manifest (your app image, optional sidecars).
-- A managed Postgres database (Neon) if your manifest requests one. The connection URL is injected as `DATABASE_URL`.
+- A managed Postgres database (default: Neon; templates can opt into Railway Docker Postgres) if your manifest requests one. The connection URL is injected as `DATABASE_URL`.
 - A managed Redis if your manifest requests one. URL injected as `REDIS_URL`.
 - An R2 bucket if your manifest declares object storage. Credentials injected as `R2_*`.
 - Your services' env vars (system + integration + user) wired in via Railway's variable system.
@@ -35,9 +35,11 @@ You don't get a long-running process, a filesystem, or websockets here. If you n
 
 ## How the URL resolves
 
-Whichever backend you're on, browsers don't talk to it directly. They hit `{deployment_slug}.{tenant_slug}.vendo.run`, which routes through the app-proxy Worker, which reads `deploy:{subdomain}` from KV and reverse-proxies to your real backend address (a `*.up.railway.app` URL or a `*.workers.dev` URL).
+Whichever backend you're on, browsers don't talk to it directly. They hit `{tenant_slug}-{deployment_slug}.vendo.run` (or the legacy two-level form for older deployments), which routes through the app-proxy Worker, which reads `deploy:{subdomain}` from KV and reverse-proxies to your real backend address (a `*.up.railway.app` URL or a `*.workers.dev` URL).
 
-This indirection is why your tool's logs sometimes show requests coming from a Cloudflare IP rather than the end user — they did, and that's by design. If you need the real client IP, read `CF-Connecting-IP` (the app-proxy preserves it).
+This indirection means your tool's logs show requests coming from a Cloudflare IP rather than the end user — that's by design.
+
+**You cannot recover the real client IP today.** The app-proxy strips Cloudflare's edge headers (`CF-Connecting-IP`, `CF-IPCountry`, `CF-Ray`, `CF-Visitor`) before forwarding, and does not synthesize `X-Forwarded-For` or `X-Real-IP` in their place. If your tool depends on client IP for rate limiting, geo-IP, or audit logging, treat every request as coming from the Cloudflare edge for now. If you need a per-user identifier on requests, use the `X-Vendo-*` identity headers injected by the proxy when Vendo auth is enabled — see [Isolation](/docs/infrastructure/isolation).
 
 ## Switching backends
 

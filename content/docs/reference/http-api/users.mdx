@@ -48,8 +48,12 @@ Identity tokens are issued by the OAuth 2.1 server at `auth.vendo.run`. They are
 | Endpoint | Accepts identity JWT? |
 |---|---|
 | `GET /api/v1/balance` | yes |
+| `GET /api/billing/balance` | yes |
 | `GET /api/deployments/me/connections` | no — App Key only |
 | `GET /api/deployments/me/events` | no — App Key only |
+| `GET /api/cli/balance` | no — `vendo_sk_*` only |
+
+`/api/v1/balance` and `/api/billing/balance` detect JWTs via dot-segment counting (three base64url segments → try JWKS verify; otherwise opaque-key lookup). The `/api/deployments/me/*` routes hard-check `token.startsWith("vendo_sk_")` and reject anything else before any verification — a malformed or unknown JWT will surface as `401 "Missing or invalid Bearer token"`, not a JWKS error.
 
 Identity tokens are verified via JWKS at `${SUPABASE_URL}/auth/v1/.well-known/jwks.json` (ES256 / RS256). `exp` is enforced; the cache window for JWKS is 10 minutes with a one-shot refetch on `kid` miss.
 
@@ -85,15 +89,19 @@ Cookie: sb-…
 
 ### Response: `200 OK`
 
+Anonymous callers also get `200` — this endpoint never `401`s.
+
 ```json
-{ "loggedIn": true, "userId": "u_…", "email": "user@example.com" }
+{ "loggedIn": true, "userId": "00000000-0000-0000-0000-000000000000", "email": "user@example.com" }
 ```
 
 ```json
 { "loggedIn": false, "userId": null, "email": null }
 ```
 
-Always `Cache-Control: no-store`.
+`userId` is the raw Supabase user UUID — there is no `u_…` prefix.
+
+The response always carries `Cache-Control: no-store`.
 
 <Callout type="info">
   `/api/auth/me` is not useful from deployed tools — it requires the dashboard's session cookie. Use the identity headers above (or [`GET /api/v1/balance`](billing) with an identity JWT) to confirm identity from your tool.

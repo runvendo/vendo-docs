@@ -1,4 +1,17 @@
 {
   "title": "HTTP API",
-  "pages": ["index", "connections", "events", "billing", "users", "deploy"]
+  "pages": [
+    "index",
+    "deploy",
+    "apps",
+    "connections",
+    "events",
+    "integrations",
+    "oauth",
+    "keys",
+    "billing",
+    "tools",
+    "tenants",
+    "users"
+  ]
 }

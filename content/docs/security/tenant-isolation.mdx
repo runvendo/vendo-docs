@@ -24,9 +24,11 @@ This is the strongest boundary Vendo offers, and it's the default for `computePr
 
 ## Per-deployment hostname and TLS
 
-Each deployment gets its own hostname under `{deployment_slug}.{tenant_slug}.vendo.run`, served by a Cloudflare Worker Custom Domain with a per-hostname TLS certificate auto-provisioned by Cloudflare. The reverse proxy reads its routing target from a per-subdomain entry — there's no shared upstream pool that a tenant could accidentally land in.
+Each deployment gets its own hostname under `{tenant_slug}-{deployment_slug}.vendo.run` (single-level — the format for all new deployments; some legacy deployments still use the two-level `{deployment_slug}.{tenant_slug}.vendo.run` form). Either way it is served by a Cloudflare Worker Custom Domain with a per-hostname TLS certificate auto-provisioned by Cloudflare. The reverse proxy reads its routing target from a per-subdomain entry — there's no shared upstream pool that a tenant could accidentally land in.
 
 Renaming a deployment swaps the routing entry atomically. The old hostname 404s immediately rather than serving the previous tenant's traffic.
+
+The proxy also enforces defense-in-depth checks on the hot path: it re-verifies that the resolved connection's `tenant_id` matches the key's `tenant_id`, and that the connection's provider matches the proxy adapter that's serving the request. Both checks pass under normal operation (cross-tenant binding writes are already rejected by a DB trigger, see below), but they sit on the request path so a bug elsewhere can't quietly route across tenants.
 
 ## Per-tenant connections, enforced in the database
 

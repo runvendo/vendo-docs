@@ -7,7 +7,7 @@ import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 import { Callout } from "fumadocs-ui/components/callout";
 import { Steps, Step } from "fumadocs-ui/components/steps";
 
-You'll go from `mkdir my-bot` to a managed deployment at `<deployment-slug>.<tenant-slug>.vendo.run` that handles `/start` and echoes back any message a user sends. The bot's BotFather token never lives in your code: Vendo holds it as a connection, injects `TELEGRAM_BOT_TOKEN` at boot, and routes incoming updates through `hooks.vendo.run`.
+You'll go from `mkdir my-bot` to a managed deployment at `<tenant-slug>-<deployment-slug>.vendo.run` that handles `/start` and echoes back any message a user sends. The bot's BotFather token never lives in your code: Vendo holds it as a connection, injects `TELEGRAM_BOT_TOKEN` at boot, and — through a deploy hook — points Telegram's `setWebhook` at your deployment with a shared `secret_token` your handler then verifies.
 
 The tutorial uses Python and TypeScript end-to-end. Both surfaces use the same `vendo.yaml` manifest and the same webhook contract, so you can mix-and-match the language tabs without losing your place.
 
@@ -15,7 +15,7 @@ The tutorial uses Python and TypeScript end-to-end. Both surfaces use the same `
 
 - A Telegram account, so you can [chat with BotFather](https://t.me/botfather) to mint a bot token.
 - A Vendo account at [vendo.run](https://vendo.run) (free; managed mode requires a credit balance later, but the bot itself doesn't call the proxy).
-- Python 3.9+ **or** Node 18+ on your local machine for the local-OSS step.
+- Python 3.11+ **or** Node 18+ on your local machine for the local-OSS step.
 - A registry you can push container images to (`ghcr.io` is what Vendo's reviewers prefer).
 
 If you've never deployed a Vendo tool before, glance at [What is a tool](/docs/concepts/what-is-a-tool) and [Two modes](/docs/concepts/two-modes) first — five minutes, and you'll know what `vendo_sk_*`, "binding," and "OSS vs Vendo mode" mean before they come up.
@@ -35,7 +35,7 @@ Open Telegram, search for [`@BotFather`](https://t.me/botfather), send `/newbot`
 
 BotFather responds with a line that looks like `1234567890:ABC-Def1234ghIklmNopqr-Stu_vwx`. That string is the bot token. Keep it somewhere you can paste from once — you'll feed it to Vendo in a later step and never see it again.
 
-While you're in BotFather, send `/setprivacy` → your bot → **Disable**. This lets the bot see every group message, which is what most echo bots want during development. Production bots usually keep privacy on and rely on @mentions.
+Privacy mode (`/setprivacy` in BotFather) only matters for bots that read group messages. The echo bot in this tutorial is exercised over a one-to-one chat, so leave the default alone.
 
 </Step>
 
@@ -124,17 +124,20 @@ For the full schema and every field you can set later, see [`vendo.yaml`](/docs/
 A Telegram bot has two architectures it can use:
 
 - **Long polling** — call `getUpdates` in a loop. Simple to run locally, but it only allows one active poller per bot token, so it doesn't compose with a managed deployment.
-- **Webhook** — Telegram POSTs each update to a URL you control. Vendo's `hooks.vendo.run` worker terminates these and forwards to your deployment, so this is the architecture you'll ship.
+- **Webhook** — Telegram POSTs each update to a URL you control. Telegram delivers each update with a shared `secret_token` your handler must verify (otherwise anyone with your bot's webhook URL can forge updates).
 
-You'll implement webhook-style for both modes. Vendo's `hooks-worker` proxies inbound updates to your service at `/telegram/webhook`, so that's the path you wire up.
+You'll implement webhook-style for both modes and check the `X-Telegram-Bot-Api-Secret-Token` header on every POST.
+
+In Vendo mode the deploy hook registers the webhook for you and passes `TELEGRAM_SIGNING_SECRET` into your container's env (alongside `TELEGRAM_BOT_TOKEN`). In OSS mode you choose any random string and set both halves yourself — the env var name `TELEGRAM_SIGNING_SECRET` keeps the code identical across modes.
 
 <Tabs items={["Python", "TypeScript"]}>
 <Tab value="Python">
 
 ```python
 # main.py
-import os
 import json
+import os
+import hmac
 from urllib.request import Request, urlopen
 
 from fastapi import FastAPI, Request as HTTPRequest, HTTPException
@@ -164,6 +167,12 @@ def send_message(chat_id: int, text: str) -> None:
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: HTTPRequest):
+    # Verify Telegram signed this update with our shared secret_token.
+    expected = os.environ.get("TELEGRAM_SIGNING_SECRET", "")
+    got = request.headers.get("x-telegram-bot-api-secret-token", "")
+    if not expected or not hmac.compare_digest(expected, got):
+        raise HTTPException(status_code=403, detail="forbidden")
+
     update = await request.json()
     message = update.get("message") or update.get("edited_message")
     if not message:
@@ -185,6 +194,7 @@ async def telegram_webhook(request: HTTPRequest):
 
 ```typescript
 // server.ts
+import { timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { Vendo } from "@vendodev/sdk";
@@ -203,7 +213,19 @@ async function sendMessage(chatId: number, text: string) {
   });
 }
 
+function secretsMatch(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
+
 app.post("/telegram/webhook", async (c) => {
+  const expected = process.env.TELEGRAM_SIGNING_SECRET ?? "";
+  const got = c.req.header("x-telegram-bot-api-secret-token") ?? "";
+  if (!expected || !secretsMatch(expected, got)) {
+    return c.json({ error: "forbidden" }, 403);
+  }
+
   const update = await c.req.json();
   const message = update.message ?? update.edited_message;
   if (!message) return c.json({ ok: true });
@@ -226,7 +248,10 @@ serve({ fetch: app.fetch, port: Number(process.env.PORT ?? 8080) });
 </Tab>
 </Tabs>
 
-Notice how the code reads `vendo.token("telegram")` rather than `os.environ["TELEGRAM_BOT_TOKEN"]` directly. Both work, but the SDK call also runs in OSS mode (where it reads the env var verbatim) and in Vendo mode (where the deploy worker has already populated the env var from the bound connection). You write one call; the resolution chain in [Two modes](/docs/concepts/two-modes) decides where the actual value comes from.
+Two things to notice:
+
+- **`vendo.token("telegram")` instead of `os.environ["TELEGRAM_BOT_TOKEN"]`.** Both work, but the SDK call also runs in OSS mode (where it reads the env var verbatim) and in Vendo mode (where the deploy worker has already populated the env var from the bound connection). You write one call; the resolution chain in [Two modes](/docs/concepts/two-modes) decides where the actual value comes from.
+- **`TELEGRAM_SIGNING_SECRET` verification is non-negotiable.** Telegram's webhook URL is effectively a shared bearer for anyone who guesses it. Without the secret-token check, anyone can POST `/telegram/webhook` and make your bot send messages on their behalf.
 
 </Step>
 
@@ -240,6 +265,7 @@ Create `.env`:
 
 ```bash
 TELEGRAM_BOT_TOKEN=<paste BotFather token>
+TELEGRAM_SIGNING_SECRET=<any random string, e.g. `openssl rand -hex 16`>
 PORT=8080
 ```
 
@@ -275,8 +301,11 @@ ngrok prints an `https://<random>.ngrok.app` URL. Register it with Telegram:
 
 ```bash
 curl -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-  -d "url=https://<random>.ngrok.app/telegram/webhook"
+  -d "url=https://<random>.ngrok.app/telegram/webhook" \
+  -d "secret_token=${TELEGRAM_SIGNING_SECRET}"
 ```
+
+Telegram will now send each update with the `X-Telegram-Bot-Api-Secret-Token` header set to your secret — the handler from the previous step compares it against `TELEGRAM_SIGNING_SECRET` and rejects unsigned POSTs.
 
 Now open Telegram, find the bot by its `@username`, and send `/start`. You should see "Hi! Send me any message and I'll echo it back." Send anything else; it echoes back. If it doesn't, watch the local server's stdout — Telegram tells you in the webhook log what shape the update was and the handler will have rejected anything unexpected.
 
@@ -356,9 +385,9 @@ If you've never minted a `ghcr.io` PAT, follow [GitHub's container registry guid
 
 Before you can deploy, the tenant (you, in this case) needs a Telegram **connection** — Vendo's per-tenant credential record for the BotFather token you minted in step 1.
 
-1. Log into [vendo.run](https://vendo.run) and open **Settings → Connections**.
+1. Log into [vendo.run](https://vendo.run) and open **Connections** in the dashboard sidebar (`/connections`).
 2. Click **Connect** next to Telegram.
-3. Paste the BotFather token. Vendo validates it by calling `getMe`, clears any pre-existing webhook, encrypts the token, and inserts a `connections` row.
+3. Paste the BotFather token. Vendo validates it by calling `getMe`, clears any pre-existing webhook, encrypts the token, and inserts a `connections` row. A fresh per-connection `signing_secret` is generated at the same time and stashed on the connection's metadata.
 
 That row is now ready to be bound to your deployment. The token never appears in your code or your `vendo.yaml` — it lives only in Vendo's encrypted store, and the deploy worker materializes it as `TELEGRAM_BOT_TOKEN` in your container's env at boot.
 
@@ -387,10 +416,16 @@ Create `<YOUR_TOOL_SLUG>/0.1.0.json` in your fork of `runvendo/vendo-templates`:
       "role": "web",
       "image": "ghcr.io/<YOUR_GH_USERNAME>/my-bot:0.1.0",
       "port": 8080,
+      "healthPath": "/healthz",
       "startCommand": "uvicorn main:app --host 0.0.0.0 --port 8080"
     }
   ],
-  "readiness": { "endpoint": "/healthz" },
+  "readiness": {
+    "healthPath": "/healthz",
+    "expectedBootTimeSec": 30,
+    "maxRetries": 60,
+    "retryIntervalSec": 5
+  },
   "integrations": [
     { "provider": "telegram" }
   ],
@@ -402,7 +437,16 @@ Create `<YOUR_TOOL_SLUG>/0.1.0.json` in your fork of `runvendo/vendo-templates`:
 }
 ```
 
-The `deployHooks.afterDeploy` block is what wires Telegram to your deployment. After your container is healthy, the deploy worker calls `setWebhook` on the bot token with `https://hooks.vendo.run/<connection_external_id>` and stamps your deployment URL into the connection metadata. From that moment, every Telegram update hits `hooks.vendo.run` first, gets verified, and is forwarded to your container at the path you declared (`/telegram/webhook`).
+The `deployHooks.afterDeploy` block is what wires Telegram to your deployment. After your container is healthy, the `telegram_set_webhook` hook (`web/src/lib/deploy-hooks/kinds/telegram-set-webhook.ts`) calls Telegram's `setWebhook` directly with:
+
+- `url: <your-deployment-url>/telegram/webhook` — Telegram POSTs straight to your container, not through any Vendo worker.
+- `secret_token: <the connection's signing_secret>` — the same value the deploy worker injects as `TELEGRAM_SIGNING_SECRET` into your container's env.
+
+That symmetry is the whole point: Vendo controls the secret on both sides of the call, so the handler you wrote in step 4 (checking `X-Telegram-Bot-Api-Secret-Token`) Just Works in Vendo mode without any extra wiring.
+
+<Callout type="info">
+There's a second Telegram delivery path used by tools that don't ship the `telegram_set_webhook` deploy hook: a tenant binds a Telegram connection **after** the deploy is live, and the bind API points the webhook at `https://hooks.vendo.run/<connection-external-id>` instead. The hooks worker (`workers/hooks-worker`) then verifies the same `X-Telegram-Bot-Api-Secret-Token`, signs the forward with `Vendo-Signature` + `Vendo-Timestamp` (HMAC over `${ts}.${body}`), and POSTs to your deployment. If you want that path, you also verify the Vendo envelope using [`webhooks.verify`](/docs/guides/recipes/verify-webhook). This tutorial uses the deploy-hook flow, which is the direct path and the one most bots want.
+</Callout>
 
 Open a PR against `runvendo/vendo-templates`, mark the catalog entry as `marketing.internal = true` in the accompanying monorepo seed migration (see [Private deploy § Path A](/docs/deploy-and-publish/private-deploy#path-a--internal-flagged-catalog-entry) for the SQL pattern), and once both PRs merge and the migration applies, the tool appears in your dashboard. Click **Deploy**, pick a deployment slug (`echo`, say), pick your Telegram connection in the wizard's Connect step, and launch.
 
@@ -414,14 +458,14 @@ The deploy worker advances through 12 phases — `validate_template`, `collect_s
 
 ## Test the deployed bot
 
-Once health passes and the deploy hook completes, your bot is live at `https://<deployment-slug>.<tenant-slug>.vendo.run` and Telegram is delivering updates through Vendo's hooks worker.
+Once health passes and the deploy hook completes, your bot is live at `https://<tenant-slug>-<deployment-slug>.vendo.run` and Telegram is POSTing updates straight to it.
 
-Open Telegram, send `/start` to your bot, and you should see the same greeting you tested locally. Send a plain message; it echoes. The only thing that changed between "local with ngrok" and "Vendo-managed deploy" is who's routing the inbound webhook — your code is identical.
+Open Telegram, send `/start` to your bot, and you should see the same greeting you tested locally. Send a plain message; it echoes. The only thing that changed between "local with ngrok" and "Vendo-managed deploy" is the URL Telegram POSTs to — your code is identical.
 
 If updates don't arrive:
 
 1. **Check `deploy_logs`** for the deployment — the `run_deploy_hooks` step is where `telegram_set_webhook` either succeeds or surfaces an error. A common failure is a stale webhook on the bot token; Vendo clears those automatically but BotFather's API has occasional lag.
-2. **Verify the webhook with Telegram** — `curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"` should return `url: "https://hooks.vendo.run/<external_id>"`.
+2. **Verify the webhook with Telegram** — `curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"` should return `url: "https://<tenant-slug>-<deployment-slug>.vendo.run/telegram/webhook"` with `has_custom_certificate: false` and `pending_update_count: 0`. If `last_error_message` is set, it's almost always a 403 from the handler — the `secret_token` you set doesn't match what your container sees.
 3. **Tail your deployment's logs** in the dashboard. Use the [inspecting-deployment-logs](/docs/deploy-and-publish/operate/logs-and-debugging) recipes if you need to interleave Cloudflare worker logs with your container logs.
 
 </Step>
@@ -432,7 +476,7 @@ If updates don't arrive:
 
 ## What you just built
 
-A `vendo.yaml`, one source file, one Dockerfile, one template JSON — and a Telegram bot that runs on managed infrastructure, with the bot token in encrypted storage, traffic terminated by Cloudflare, and webhook delivery brokered by `hooks.vendo.run`. None of those moving parts is in your repo.
+A `vendo.yaml`, one source file, one Dockerfile, one template JSON — and a Telegram bot that runs on managed infrastructure, with the bot token in encrypted storage, traffic terminated by Cloudflare, and webhook delivery wired by the `telegram_set_webhook` deploy hook so Telegram POSTs straight to your container with a verifiable `secret_token`. None of those moving parts is in your repo.
 
 Two follow-on paths from here, depending on what you want next:
 

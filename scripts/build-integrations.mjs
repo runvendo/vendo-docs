@@ -1,53 +1,41 @@
 #!/usr/bin/env node
 /**
- * build-integrations.mjs — hybrid generator for the per-provider integration
- * pages under `content/docs/integrations/`.
+ * build-integrations.mjs — monorepo-sourced generator for the per-provider
+ * integration pages under `content/docs/integrations/`.
  *
  * Source-of-truth model
  * ---------------------
  *
- *   `$VENDO_INTEGRATIONS_DIR/<slug>/catalog.json` is **primary** — it's the
- *   committed, version-controlled, code-reviewed reflection of what the proxy
- *   worker actually ships. Every page field that's derivable from the catalog
- *   (name, description, category, supported_profiles, default_profile,
- *   proxy_base_url, marketing.about, docs_url, logo_url) comes from there.
+ *   `$VENDO_MONOREPO/packages/integrations/<slug>/catalog.json` drives the
+ *   catalog-facing fields (name, description, category, supported_profiles,
+ *   default_profile, proxy_base_url, marketing.about, docs_url, logo_url).
  *
- *   The prod `integrations` DB row is **secondary**, used for:
+ *   `$VENDO_MONOREPO/packages/integrations/<slug>/integration.ts` drives the
+ *   runtime env-var contract via its `connectionEnvVars: ConnectionEnvVarMap`
+ *   export. This replaces the legacy prod `integrations.env_bootstrap` DB
+ *   column, which has lagged the in-repo source since the `connectionEnvVars`
+ *   rewrite landed (see PR notes around `262_hermes_release_3_0_6.sql`).
  *
- *     - `env_bootstrap` — the runtime env-var contract. Not yet authored in
- *       catalog.yaml; comes from migrations. (Follow-up: move this into the
- *       catalog pipeline and drop the DB dependency entirely.)
- *
- *     - `enabled` drift detection — if the DB has a provider enabled that
- *       isn't in the monorepo catalog (composio-managed slugs are the
- *       current example), we render a DB-only fallback page and flag it.
- *       If catalog says `enabled: true` but the DB row is disabled (or
- *       missing), we skip and warn.
+ *   The DB dependency has been dropped entirely. The script runs against a
+ *   vanilla monorepo clone — no Infisical / psql / prod credentials needed.
  *
  * Hand-written prose between `{/* PROSE-START *\/}` and `{/* PROSE-END *\/}`
  * is preserved across re-runs. The link list inside index.mdx between
  * `{/* LIST-START *\/}` / `{/* LIST-END *\/}` is auto-rewritten.
  *
  * Outputs are committed to git — Cloudflare Pages does not run this script at
- * build time (no prod credentials there). Re-run locally (or via the
- * follow-up scheduled GitHub Action — see TODO at the top) whenever the
- * monorepo catalogs or the DB snapshot changes.
+ * build time. Re-run locally whenever the monorepo's
+ * `packages/integrations/<slug>/{catalog.json,integration.ts}` change.
  *
  * Usage:
- *   VENDO_INTEGRATIONS_DIR=/path/to/vendo/packages/integrations \
- *     infisical run --env prod --projectId b366cac7-1716-47a0-9617-f335500f6dee -- \
- *     node scripts/build-integrations.mjs
+ *   VENDO_MONOREPO=/path/to/vendo node scripts/build-integrations.mjs
  *
- * TODO(follow-up #1): scheduled GitHub Action that re-runs this script weekly
- * and opens a PR against `runvendo/vendo-docs` whenever monorepo catalog or
- * DB env_bootstrap drifts from the committed MDX.
- *
- * TODO(follow-up #2): drop the DB dependency once `env_bootstrap` is sourced
- * from `catalog.yaml` in the monorepo build pipeline. Then the docs generator
- * can run against a vanilla monorepo clone with no Infisical / psql.
+ * Defaults `VENDO_MONOREPO` to `/Users/yousefh/Desktop/Cool Code/vendo` if
+ * unset (the canonical local checkout). `VENDO_INTEGRATIONS_DIR` is still
+ * honored for back-compat — if set it takes precedence and should point at
+ * `packages/integrations/` directly.
  */
 
-import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,89 +51,153 @@ const PROSE_END = "{/* PROSE-END */}";
 const LIST_START = "{/* LIST-START — replaced by scripts/build-integrations.mjs */}";
 const LIST_END = "{/* LIST-END */}";
 
-const PSQL = process.env.PSQL_BIN || "psql";
-const DB_URL = process.env.DATABASE_URL;
-if (!DB_URL) {
-  console.error(
-    "ERROR: DATABASE_URL is unset. Run under `infisical run --env prod -- node scripts/build-integrations.mjs`.",
-  );
-  process.exit(1);
-}
+const DEFAULT_MONOREPO = "/Users/yousefh/Desktop/Cool Code/vendo";
 
-const INTEGRATIONS_DIR = process.env.VENDO_INTEGRATIONS_DIR
-  ? resolve(process.env.VENDO_INTEGRATIONS_DIR)
-  : null;
-if (!INTEGRATIONS_DIR) {
-  console.error(
-    "ERROR: VENDO_INTEGRATIONS_DIR is unset. catalog.json is the primary source — set it to the path of `packages/integrations/` in the monorepo.",
-  );
-  process.exit(1);
-}
+const INTEGRATIONS_DIR = (() => {
+  if (process.env.VENDO_INTEGRATIONS_DIR) return resolve(process.env.VENDO_INTEGRATIONS_DIR);
+  const monorepo = process.env.VENDO_MONOREPO
+    ? resolve(process.env.VENDO_MONOREPO)
+    : DEFAULT_MONOREPO;
+  return join(monorepo, "packages", "integrations");
+})();
+
 if (!existsSync(INTEGRATIONS_DIR)) {
-  console.error(`ERROR: VENDO_INTEGRATIONS_DIR=${INTEGRATIONS_DIR} does not exist.`);
+  console.error(
+    `ERROR: integrations dir not found at ${INTEGRATIONS_DIR}. Set VENDO_MONOREPO to the path of the vendo monorepo, or VENDO_INTEGRATIONS_DIR to packages/integrations/ directly.`,
+  );
   process.exit(1);
 }
 
 // ---------- 1. Walk monorepo for enabled catalogs ---------------------------
 
-function discoverCatalogs() {
-  // Each subfolder of $VENDO_INTEGRATIONS_DIR is one slug (or a non-slug like
-  // `composio` / `lib` — those don't have a catalog.json and are skipped).
+function discoverIntegrations() {
+  // Each subfolder of `packages/integrations/` is one slug (or a non-slug like
+  // `composio` / `lib` / `litellm-aliases` — those don't have a catalog.json
+  // and are skipped). For every slug with an enabled catalog.json we also
+  // require an integration.ts so we can extract connectionEnvVars.
   const entries = readdirSync(INTEGRATIONS_DIR);
-  const catalogs = [];
+  const out = [];
   for (const entry of entries) {
     const folder = join(INTEGRATIONS_DIR, entry);
     const stat = statSync(folder, { throwIfNoEntry: false });
     if (!stat || !stat.isDirectory()) continue;
-    const path = join(folder, "catalog.json");
-    if (!existsSync(path)) continue;
+    const catalogPath = join(folder, "catalog.json");
+    if (!existsSync(catalogPath)) continue;
     let catalog;
     try {
-      catalog = JSON.parse(readFileSync(path, "utf8"));
+      catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
     } catch (err) {
-      console.warn(`WARN: failed to parse ${path}: ${err.message}`);
+      console.warn(`WARN: failed to parse ${catalogPath}: ${err.message}`);
       continue;
     }
     if (!catalog || catalog.enabled !== true) continue;
     if (catalog.slug !== entry) {
       console.warn(
-        `WARN: ${path} declares slug="${catalog.slug}" but lives in folder "${entry}" — skipping.`,
+        `WARN: ${catalogPath} declares slug="${catalog.slug}" but lives in folder "${entry}" — skipping.`,
       );
       continue;
     }
-    catalogs.push(catalog);
+    const integrationTsPath = join(folder, "integration.ts");
+    let envVars = null;
+    if (existsSync(integrationTsPath)) {
+      try {
+        envVars = parseConnectionEnvVars(readFileSync(integrationTsPath, "utf8"));
+      } catch (err) {
+        console.warn(`WARN: failed to parse connectionEnvVars in ${integrationTsPath}: ${err.message}`);
+      }
+    } else {
+      console.warn(`WARN: ${integrationTsPath} missing — env-vars table will be empty.`);
+    }
+    out.push({ catalog, envVars });
   }
-  catalogs.sort((a, b) => a.slug.localeCompare(b.slug));
-  return catalogs;
+  out.sort((a, b) => a.catalog.slug.localeCompare(b.catalog.slug));
+  return out;
 }
 
-// ---------- 2. DB snapshot (env_bootstrap + drift check) --------------------
+// ---------- 2. Parse connectionEnvVars from integration.ts ------------------
 
-function fetchDbSnapshot() {
-  // Pull every enabled row. We need env_bootstrap for every catalog provider
-  // (DB-only field) AND we need to see DB-enabled providers that lack a
-  // monorepo catalog (the composio-managed fallback case).
-  const sql = `
-    SELECT json_agg(row_to_json(t) ORDER BY t.provider) AS data
-    FROM (
-      SELECT provider, name, category, description, logo_url,
-             supported_profiles, default_profile, oauth_client_config,
-             env_bootstrap
-      FROM integrations
-      WHERE enabled = true
-    ) t;
-  `;
-  const out = execFileSync(PSQL, [DB_URL, "-A", "-t", "-c", sql], {
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  const parsed = JSON.parse(out.trim());
-  if (!Array.isArray(parsed)) {
-    throw new Error("Unexpected DB response shape (expected JSON array).");
+/**
+ * Extract the `connectionEnvVars` object literal from a TypeScript source
+ * string. We're not running a full TS parser — the structure is always:
+ *
+ *   const connectionEnvVars: ConnectionEnvVarMap = { ... };
+ *
+ * with plain object literals nested inside (string keys / string values /
+ * boolean values). We brace-balance from the `=` to the matching `}` and
+ * then strip the TS-only bits before `JSON.parse`-ing.
+ *
+ * Returns a `Record<profile, Record<envName, descriptor>>` where descriptor
+ * is `{ source: { type, path? }, isSecret }`.
+ */
+function parseConnectionEnvVars(tsSource) {
+  const re = /const\s+connectionEnvVars\s*:\s*ConnectionEnvVarMap\s*=\s*/;
+  const match = re.exec(tsSource);
+  if (!match) throw new Error("no `const connectionEnvVars: ConnectionEnvVarMap = ` declaration found");
+  let i = match.index + match[0].length;
+  // expect an opening brace
+  while (i < tsSource.length && /\s/.test(tsSource[i])) i++;
+  if (tsSource[i] !== "{") {
+    throw new Error(`expected '{' at offset ${i}, got ${JSON.stringify(tsSource[i])}`);
   }
-  const bySlug = new Map();
-  for (const row of parsed) bySlug.set(row.provider, row);
-  return bySlug;
+  const start = i;
+  // brace-balance walk that respects strings + line comments
+  let depth = 0;
+  let inString = null; // null | '"' | "'"
+  let inLineComment = false;
+  let inBlockComment = false;
+  while (i < tsSource.length) {
+    const ch = tsSource[i];
+    const next = tsSource[i + 1];
+    if (inLineComment) {
+      if (ch === "\n") inLineComment = false;
+      i++;
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === "*" && next === "/") { inBlockComment = false; i += 2; continue; }
+      i++;
+      continue;
+    }
+    if (inString) {
+      if (ch === "\\") { i += 2; continue; }
+      if (ch === inString) { inString = null; i++; continue; }
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inString = ch; i++; continue; }
+    if (ch === "/" && next === "/") { inLineComment = true; i += 2; continue; }
+    if (ch === "/" && next === "*") { inBlockComment = true; i += 2; continue; }
+    if (ch === "{") { depth++; i++; continue; }
+    if (ch === "}") {
+      depth--;
+      i++;
+      if (depth === 0) break;
+      continue;
+    }
+    i++;
+  }
+  if (depth !== 0) throw new Error("unbalanced braces walking connectionEnvVars literal");
+  const literal = tsSource.slice(start, i); // includes outer { }
+
+  // Now convert the JS object literal → JSON. The structure uses single-token
+  // identifier keys (KEY: { source: ... }), single quotes, and trailing
+  // commas in some places. To stay robust against future tweaks we just
+  // `Function`-eval it — the source is committed monorepo TS, not untrusted
+  // input. (If you're auditing this: yes, we are evaling a string from a
+  // local file path you control. We are not fetching it from the network.)
+  let parsed;
+  try {
+    // `new Function` is significantly cheaper than spawning a tsx subprocess
+    // and avoids a runtime dependency. The object literal is pure JS — no
+    // imports, no types, no statements other than the `return`.
+    parsed = new Function(`return (${literal});`)();
+  } catch (err) {
+    throw new Error(`failed to evaluate connectionEnvVars literal: ${err.message}`);
+  }
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("connectionEnvVars did not evaluate to an object");
+  }
+  return parsed;
 }
 
 // ---------- 3. Render helpers ----------------------------------------------
@@ -190,12 +242,88 @@ function profileSection(profiles, defaultProfile) {
   return md;
 }
 
-function envVarsSection(envBootstrap) {
-  const vars = envBootstrap && Array.isArray(envBootstrap.vars) ? envBootstrap.vars : [];
-  if (vars.length === 0) return "_No environment variables injected._\n";
-  let md = "| Variable | Source |\n| --- | --- |\n";
-  for (const v of vars) {
-    md += `| \`${v.name}\` | \`${v.value_from || "—"}\` |\n`;
+/**
+ * Render a human-readable label for a ConnectionEnvVarSource, matching the
+ * `type` discriminator in `packages/integration-types/src/index.ts`.
+ */
+function formatSource(source) {
+  if (!source || typeof source !== "object") return "—";
+  switch (source.type) {
+    case "credential":
+      return "connection credential (encrypted at rest)";
+    case "metadata":
+      return `connection metadata: \`${source.path}\``;
+    case "vendo_api_key":
+      return "Vendo-issued API key (`vendo_sk_*`)";
+    case "proxy_base_url":
+      return "Vendo proxy base URL (`https://<slug>-proxy.vendo.run/v1`)";
+    default:
+      return `\`${source.type}\``;
+  }
+}
+
+/**
+ * Render the env-vars table for a single integration. `envVars` is the
+ * parsed object from integration.ts — keyed by profile, then env-var name.
+ *
+ * Most integrations ship the same env vars under every supported profile
+ * (e.g. anthropic's `byok_static` and `vendo_managed_pool` both inject
+ * `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL`). We de-dupe across profiles
+ * by env-var name, joining the profile list for any var that differs.
+ */
+function envVarsSection(envVars, supportedProfiles) {
+  if (!envVars || typeof envVars !== "object") {
+    return "_No environment variables injected._\n";
+  }
+  const profiles = Array.isArray(supportedProfiles) && supportedProfiles.length > 0
+    ? supportedProfiles
+    : Object.keys(envVars);
+
+  // Collect: for each env-var name, the set of profiles that declare it and
+  // the descriptors. If the descriptor is identical across all profiles
+  // that declare it, render a single row; otherwise render one row per
+  // (var, profile) pair.
+  const byName = new Map(); // name -> Array<{profile, descriptor}>
+  for (const profile of profiles) {
+    const map = envVars[profile];
+    if (!map || typeof map !== "object") continue;
+    for (const [name, descriptor] of Object.entries(map)) {
+      if (!byName.has(name)) byName.set(name, []);
+      byName.get(name).push({ profile, descriptor });
+    }
+  }
+  if (byName.size === 0) return "_No environment variables injected._\n";
+
+  const rows = [];
+  // Deterministic ordering — sort var names lexicographically.
+  const names = [...byName.keys()].sort();
+  for (const name of names) {
+    const entries = byName.get(name);
+    // Group entries with structurally-identical descriptors so the table
+    // doesn't repeat the same row N times for N profiles.
+    const groups = new Map(); // key -> { profiles, descriptor }
+    for (const e of entries) {
+      const key = JSON.stringify(e.descriptor);
+      if (!groups.has(key)) groups.set(key, { profiles: [], descriptor: e.descriptor });
+      groups.get(key).profiles.push(e.profile);
+    }
+    for (const { profiles: gProfiles, descriptor } of groups.values()) {
+      const secretFlag = descriptor && descriptor.isSecret ? "Yes" : "No";
+      const profileList = gProfiles.length === profiles.length
+        ? "all"
+        : gProfiles.map((p) => `\`${p}\``).join(", ");
+      rows.push({
+        name,
+        profiles: profileList,
+        source: formatSource(descriptor && descriptor.source),
+        secret: secretFlag,
+      });
+    }
+  }
+
+  let md = "| Variable | Profiles | Source | Secret |\n| --- | --- | --- | --- |\n";
+  for (const row of rows) {
+    md += `| \`${row.name}\` | ${row.profiles} | ${row.source} | ${row.secret} |\n`;
   }
   return md;
 }
@@ -242,7 +370,7 @@ function preserveProse(slug, defaultProse) {
 
 // ---------- 4. Render: catalog-driven page ----------------------------------
 
-function renderFromCatalog(catalog, envBootstrap) {
+function renderPage(catalog, envVars) {
   const slug = catalog.slug;
   const proxy = typeof catalog.proxy_base_url === "string" && catalog.proxy_base_url.length > 0
     ? catalog.proxy_base_url
@@ -277,7 +405,7 @@ function renderFromCatalog(catalog, envBootstrap) {
 
   return `${frontmatter}
 
-{/* Generated by scripts/build-integrations.mjs from packages/integrations/${slug}/catalog.json. Hand-edit only the prose block between PROSE-START and PROSE-END markers. */}
+{/* Generated by scripts/build-integrations.mjs from packages/integrations/${slug}/{catalog.json, integration.ts}. Hand-edit only the prose block between PROSE-START and PROSE-END markers. */}
 
 import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 
@@ -291,9 +419,9 @@ ${profileSection(catalog.supported_profiles, catalog.default_profile)}
 
 ## Environment variables
 
-These are the env vars Vendo injects into your deployment at boot when this integration is bound.
+These are the env vars Vendo injects into your deployment at boot when this integration is bound. Source values are resolved by \`resolveConnectionEnvVars\` in \`packages/integrations/lib/\` from the connection record (credential, metadata) and deployment context (proxy URL, Vendo-issued API key).
 
-${envVarsSection(envBootstrap)}
+${envVarsSection(envVars, catalog.supported_profiles)}
 
 ${proxyBlock}
 ## Quickstart
@@ -324,89 +452,7 @@ ${catalog.docs_url ? `- [${catalog.name} API docs](${catalog.docs_url})` : ""}
 `;
 }
 
-// ---------- 5. Render: DB-only fallback (composio-managed) ------------------
-
-function renderFromDbOnly(row) {
-  // Composio-managed slugs that don't have a catalog.json in the monorepo
-  // yet. Same template but driven entirely off the DB row, with a TODO
-  // admonition pointing to the catalog-authoring follow-up.
-  const slug = row.provider;
-  const examples = codeExamples(slug, "Returned token is the credential for this provider.");
-  const proseDefault = `${row.name} is wired into Vendo via the Composio bridge. Tool authors connect a tenant's ${row.name} account through Vendo's UI; once connected, the SDK exposes the credential at runtime so your tool can call the ${row.name} API on the tenant's behalf.`;
-  const prose = preserveProse(slug, proseDefault);
-
-  const frontmatter = [
-    "---",
-    `title: ${row.name}`,
-    `description: ${(row.description || "").replace(/\n/g, " ")}`,
-    `category: ${row.category || "other"}`,
-    `slug: ${slug}`,
-    row.logo_url ? `logo: ${row.logo_url}` : "",
-    "---",
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  return `${frontmatter}
-
-{/* Generated by scripts/build-integrations.mjs from the prod \`integrations\` DB row (no monorepo catalog.json yet). Hand-edit only the prose block between PROSE-START and PROSE-END markers. */}
-
-import { Tab, Tabs } from "fumadocs-ui/components/tabs";
-import { Callout } from "fumadocs-ui/components/callout";
-
-<Callout type="info">
-  This page is generated from the prod \`integrations\` DB row. The monorepo
-  doesn't yet have a \`packages/integrations/${slug}/catalog.yaml\` so some
-  fields (proxy endpoint, marketing copy, docs URL) aren't available. A
-  follow-up task tracks promoting it to a first-class catalog entry.
-</Callout>
-
-${PROSE_START}
-${prose}
-${PROSE_END}
-
-## Auth modes
-
-${profileSection(row.supported_profiles, row.default_profile)}
-
-## Environment variables
-
-These are the env vars Vendo injects into your deployment at boot when this integration is bound.
-
-${envVarsSection(row.env_bootstrap)}
-
-## Direct API
-
-${row.name} is called directly through the Composio bridge (no dedicated Vendo proxy subdomain). The SDK reads the injected credential from the environment and talks to ${row.name}'s API host.
-
-## Quickstart
-
-<Tabs items={["Python", "TypeScript", "Swift"]}>
-  <Tab value="Python">
-\`\`\`python
-${examples.py}
-\`\`\`
-  </Tab>
-  <Tab value="TypeScript">
-\`\`\`typescript
-${examples.ts}
-\`\`\`
-  </Tab>
-  <Tab value="Swift">
-\`\`\`swift
-${examples.swift}
-\`\`\`
-  </Tab>
-</Tabs>
-
-## Learn more
-
-- [Concepts: connections & integrations](/docs/concepts) — how connections, bindings, and credentials fit together.
-- [Build a tool: SDK](/docs/build-a-tool) — full \`vendo.token\` semantics and resolution.
-`;
-}
-
-// ---------- 6. Index landing + meta rewrite ---------------------------------
+// ---------- 5. Index landing + meta rewrite ---------------------------------
 
 function rewriteIndexList(allProviders) {
   if (!existsSync(INDEX_PATH)) {
@@ -450,46 +496,19 @@ function rewriteMeta(allProviders) {
 
 // ---------- main ------------------------------------------------------------
 
-const catalogs = discoverCatalogs();
-console.log(`Discovered ${catalogs.length} enabled catalog.json files in the monorepo.`);
-
-const dbSnapshot = fetchDbSnapshot();
-console.log(`Fetched ${dbSnapshot.size} enabled rows from the DB.`);
+const integrations = discoverIntegrations();
+console.log(`Discovered ${integrations.length} enabled integrations in ${INTEGRATIONS_DIR}.`);
 
 const allProviders = []; // {slug, name, description} for index + meta
-const driftCatalogOnly = []; // catalog enabled but DB disabled / missing
-const dbOnly = []; // DB enabled but no catalog (composio-managed today)
 const written = [];
 
-// Pass 1: every catalog.json drives a page; DB fills env_bootstrap.
-for (const catalog of catalogs) {
-  const dbRow = dbSnapshot.get(catalog.slug);
-  if (!dbRow) {
-    driftCatalogOnly.push(catalog.slug);
-    console.warn(
-      `WARN: ${catalog.slug} is enabled in monorepo catalog.json but missing or disabled in prod DB. Page will render without env_bootstrap.`,
-    );
-  }
-  const envBootstrap = dbRow ? dbRow.env_bootstrap : null;
-  const content = renderFromCatalog(catalog, envBootstrap);
+for (const { catalog, envVars } of integrations) {
+  const content = renderPage(catalog, envVars);
   const path = join(OUT_DIR, `${catalog.slug}.mdx`);
   writeFileSync(path, content);
   written.push(catalog.slug);
   allProviders.push({ slug: catalog.slug, name: catalog.name, description: catalog.description });
-  console.log(`WROTE ${path}  (catalog-driven)`);
-}
-
-// Pass 2: DB-enabled providers without a catalog file → DB-only fallback page.
-const catalogSlugs = new Set(catalogs.map((c) => c.slug));
-for (const [slug, row] of dbSnapshot) {
-  if (catalogSlugs.has(slug)) continue;
-  dbOnly.push(slug);
-  const content = renderFromDbOnly(row);
-  const path = join(OUT_DIR, `${slug}.mdx`);
-  writeFileSync(path, content);
-  written.push(slug);
-  allProviders.push({ slug, name: row.name, description: row.description });
-  console.log(`WROTE ${path}  (DB-only fallback)`);
+  console.log(`WROTE ${path}`);
 }
 
 // Stable ordering for index + meta.
@@ -498,9 +517,6 @@ rewriteIndexList(allProviders);
 rewriteMeta(allProviders);
 
 console.log("\nSummary");
-console.log(`  Catalog-driven pages: ${catalogs.length}`);
-console.log(`  DB-only fallback pages: ${dbOnly.length}${dbOnly.length ? ` (${dbOnly.join(", ")})` : ""}`);
-if (driftCatalogOnly.length) {
-  console.log(`  Drift (catalog enabled, DB disabled/missing): ${driftCatalogOnly.join(", ")}`);
-}
+console.log(`  Integrations rendered: ${written.length}`);
+console.log(`  Slugs: ${written.join(", ")}`);
 console.log("\nDone.");

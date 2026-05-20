@@ -25,8 +25,17 @@ On success:
 
 If the server-side revoke fails (offline, server restart, rate limit, etc.), the CLI prints a warning and still removes the local file. The local credential is gone either way; the server-side key will sit in `keys` with `revoked_at` next time you log in, or you can revoke it from the dashboard.
 
+If the server responded with a non-OK status:
+
 ```
 Server-side revoke returned 503; clearing local credential anyway.
+✓ Logged out.
+```
+
+If the network call itself failed (DNS error, offline, TLS error, etc.):
+
+```
+Could not reach server to revoke: <error>; clearing local credential.
 ✓ Logged out.
 ```
 
@@ -35,6 +44,8 @@ If there is no local credential to start with:
 ```
 Not logged in.
 ```
+
+All paths exit `0`.
 
 ## Related
 

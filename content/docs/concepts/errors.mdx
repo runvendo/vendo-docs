@@ -1,28 +1,35 @@
 ---
 title: Errors
-description: 12 typed error classes, a mapping table, and catch examples.
+description: Typed error classes mapped to the `Vendo-Error-Code` header.
 ---
 
 import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 
 All SDK errors inherit from a common base (`VendoError` in Python/TS, `VendoError` enum in Swift). Every error carries enough context to act on it without string parsing.
 
-## Error class reference
+## Error code reference
 
-| Code | Python / TS class | Swift case | When thrown |
-|------|-------------------|------------|-------------|
-| `not_connected` | `NotConnected` | `.notConnected` | No token found for slug; env var not set |
-| `needs_reauth` | `NeedsReauth` | `.needsReauth` | Token exists but is expired or revoked; re-auth required |
-| `auth` | `AuthError` | `.auth` | `VENDO_API_KEY` is invalid or revoked |
-| `rate_limited` | `RateLimited` | `.rateLimited` | Too many requests; back off |
-| `balance_exhausted` | `BalanceExhausted` | `.balanceExhausted` | Vendo wallet is empty |
-| `spend_cap_exceeded` | `SpendCapExceeded` | `.spendCapExceeded` | Per-deployment spend cap hit |
-| `upstream` | `UpstreamError` | `.upstream` | Connected provider returned an error |
-| `validation` | `ValidationError` | `.validation` | Request payload or webhook signature invalid |
-| `idempotency_conflict` | `IdempotencyConflict` | `.idempotencyConflict` | Duplicate idempotency key with different payload |
-| `vendo_only_feature` | `VendoOnlyFeature` | `.vendoOnlyFeature` | OSS mode call hit a Vendo-only surface |
-| `identity_not_present` | `IdentityNotPresent` | `.identityNotPresent` | `forRequest` called without `X-Vendo-User-JWT` header |
-| `other` | `VendoError` | `.other` | Unexpected error; check `message` |
+The `Vendo-Error-Code` response header is the canonical wire-format code. Several codes can map to the same SDK class — `binding_missing` and `connection_revoked` both raise `NotConnected`, for example.
+
+| `Vendo-Error-Code` | Python / TS class | Swift case | When the proxy returns it |
+|--------------------|-------------------|------------|---------------------------|
+| `app_unknown` | `AuthError` | `.auth` | The presented `vendo_sk_*` bearer was not found |
+| `app_revoked` | `AuthError` | `.auth` | The app key was revoked by the tenant |
+| `app_expired` | `AuthError` | `.auth` | The app key passed its expiry |
+| `binding_missing` | `NotConnected` | `.notConnected` | No connection is bound for the requested provider |
+| `connection_revoked` | `NotConnected` | `.notConnected` | The bound connection was revoked |
+| `connection_needs_reauth` | `NeedsReauth` | `.needsReauth` | The bound OAuth token expired; user must re-authorize |
+| `balance_exhausted` | `BalanceExhausted` | `.balanceExhausted` | The tenant's wallet hit zero |
+| `spend_cap_daily` | `SpendCapExceeded` | `.spendCapExceeded` | The per-app daily spend cap fired |
+| `spend_cap_monthly` | `SpendCapExceeded` | `.spendCapExceeded` | The per-app monthly spend cap fired |
+| `upstream_rate_limited` | `RateLimited` | `.rateLimited` | The upstream provider returned 429 |
+| `upstream_error` | `UpstreamError` | `.upstream` | The upstream provider returned a non-2xx, non-429 response |
+| `validation_failed` | `ValidationError` | `.validation` | Request payload or webhook signature was invalid |
+| `idempotency_conflict` | `IdempotencyConflict` | `.idempotencyConflict` | Same idempotency key with a different payload hash |
+| `vendo_only_feature` | `VendoOnlyFeature` | `.vendoOnlyFeature` | OSS-mode call hit a surface that requires `VENDO_API_KEY` |
+| `identity_not_present` | `IdentityNotPresent` | `.identityNotPresent` | `forRequest` called without an `X-Vendo-User-JWT` header |
+
+Codes the SDK does not recognise raise the base `VendoError` with the code preserved on `err.code`.
 
 ## Catching errors
 
@@ -38,6 +45,7 @@ All SDK errors inherit from a common base (`VendoError` in Python/TS, `VendoErro
         AuthError,
         RateLimited,
         BalanceExhausted,
+        SpendCapExceeded,
         VendoOnlyFeature,
         VendoError,
     )
@@ -45,17 +53,23 @@ All SDK errors inherit from a common base (`VendoError` in Python/TS, `VendoErro
     try:
         tok = vendo.token("slack")
     except NotConnected as e:
-        # Guide the user to connect
+        # binding_missing or connection_revoked
         url = vendo.connect_url(e.slug, return_to="https://yourapp.com/after-connect")
         print(f"Connect Slack first: {url}")
     except NeedsReauth as e:
+        # connection_needs_reauth — user must re-authorize
         print(f"Re-authorize: {e.connect_url}")
     except AuthError:
+        # app_unknown / app_revoked / app_expired
         print("Invalid or revoked VENDO_API_KEY.")
     except RateLimited as e:
+        # upstream_rate_limited
         print(f"Rate limited — retry after {e.retry_after}s")
     except BalanceExhausted:
         print("Wallet empty — top up at vendo.run")
+    except SpendCapExceeded as e:
+        # spend_cap_daily or spend_cap_monthly — inspect e.code
+        print(f"Spend cap hit ({e.code}); retry after {e.retry_after}s")
     except VendoOnlyFeature as e:
         print(f"Not available in OSS mode: {e}")
     except VendoError as e:
@@ -66,11 +80,12 @@ All SDK errors inherit from a common base (`VendoError` in Python/TS, `VendoErro
 
     | Attribute | Type | Description |
     |-----------|------|-------------|
-    | `code` | `str` | Snake-case error code |
-    | `status` | `int \| None` | HTTP status from Vendo API |
-    | `slug` | `str \| None` | Integration slug (`NotConnected`, `NeedsReauth`) |
+    | `code` | `str` | Canonical `Vendo-Error-Code` value |
+    | `status` | `int \| None` | HTTP status from the response |
+    | `slug` | `str \| None` | Provider slug (`NotConnected`, `NeedsReauth`) |
     | `connect_url` | `str \| None` | OAuth popup URL to fix the issue |
-    | `retry_after` | `float \| None` | Seconds to wait before retrying (`RateLimited`) |
+    | `retry_after` | `int \| None` | Seconds to wait before retrying (`RateLimited`, `SpendCapExceeded`) |
+    | `suggested_fix` | `str \| None` | Optional human-readable remediation hint |
     | `message` | `str` | Human-readable description |
   </Tab>
   <Tab value="TypeScript">
@@ -84,6 +99,7 @@ All SDK errors inherit from a common base (`VendoError` in Python/TS, `VendoErro
       AuthError,
       RateLimited,
       BalanceExhausted,
+      SpendCapExceeded,
       VendoOnlyFeature,
       VendoError,
     } from "@vendodev/sdk";
@@ -103,6 +119,8 @@ All SDK errors inherit from a common base (`VendoError` in Python/TS, `VendoErro
         console.log(`Retry after ${e.retryAfter}s`);
       } else if (e instanceof BalanceExhausted) {
         console.log("Wallet empty");
+      } else if (e instanceof SpendCapExceeded) {
+        console.log(`Spend cap hit (${e.code})`);
       } else if (e instanceof VendoOnlyFeature) {
         console.log("Set VENDO_API_KEY to use this feature");
       } else if (e instanceof VendoError) {
@@ -117,9 +135,9 @@ All SDK errors inherit from a common base (`VendoError` in Python/TS, `VendoErro
 
     | Property | Type | Description |
     |----------|------|-------------|
-    | `code` | `string` | Camel-case error code |
+    | `code` | `string` | Canonical `Vendo-Error-Code` value |
     | `status` | `number \| undefined` | HTTP status |
-    | `slug` | `string \| undefined` | Integration slug |
+    | `slug` | `string \| undefined` | Provider slug |
     | `connectUrl` | `string \| undefined` | OAuth popup URL |
     | `retryAfter` | `number \| undefined` | Seconds to retry |
     | `message` | `string` | Human-readable description |
@@ -140,6 +158,8 @@ All SDK errors inherit from a common base (`VendoError` in Python/TS, `VendoErro
         print("Rate limited — retry in \(retryAfter ?? 60)s")
     } catch VendoError.balanceExhausted(let message) {
         print("Wallet empty: \(message)")
+    } catch VendoError.spendCapExceeded(let message) {
+        print("Spend cap hit: \(message)")
     } catch VendoError.vendoOnlyFeature(let message) {
         print("Vendo-only: \(message)")
     } catch VendoError.auth(let message) {

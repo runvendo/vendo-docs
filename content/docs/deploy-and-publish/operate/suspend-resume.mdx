@@ -11,11 +11,11 @@ A suspended deployment is paused — compute is off, the database compute is pau
 
 ```
 running ─→ suspending ─→ suspended ─→ resuming ─→ running
-                                  └─→ resume_failed
+       └─→ suspend_failed       └─→ resume_failed
 suspended ── 90 days ──→ destroyed
 ```
 
-The transition states (`suspending`, `resuming`, `resume_failed`) exist so the dashboard can show progress and so workflows can recover from mid-transition crashes idempotently.
+The transition states (`suspending`, `resuming`) and the failure states (`suspend_failed`, `resume_failed`) exist so the dashboard can show progress and so workflows can recover from mid-transition crashes idempotently. `suspend_failed` is what `SuspendWorkflow` writes when the compute provider's `suspend()` call throws — the deployment is in an unknown half-suspended state and needs a retry.
 
 ## What suspend does
 
@@ -51,10 +51,10 @@ Tool authors don't suspend tenants directly. Suspend is a tenant action or a bil
 
 ## What resume does
 
-`ResumeWorkflow` is the mirror:
+`ResumeWorkflow` is the mirror, but databases come back first so compute has a working connection when it boots:
 
-1. `serviceInstanceRedeploy` on each Railway service. This reuses the preserved service config + env vars — no new image fetch unless it was never deployed.
-2. Unpauses the Neon branch.
+1. `resume_databases` — unpause the Neon branch (and any other paused providers).
+2. `resume_compute` — `serviceInstanceRedeploy` on each Railway service. This reuses the preserved service config + env vars — no new image fetch unless it was never deployed.
 3. Re-runs the readiness check.
 4. Flips KV back to `status='running'`.
 5. Sets the deployment row to `running`.

@@ -1,27 +1,29 @@
 ---
 title: Billing
-description: Read the tenant's credit balance.
+description: Read the tenant's credit balance and usage rollups.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-## `GET /api/v1/balance`
+Vendo ships **two distinct balance endpoints** with different response shapes. `/api/billing/balance` is what the SDKs call and is denominated in micros; `/api/v1/balance` is the legacy CORS surface used by the dashboard widget and the CLI's `whoami`. Both accept the same credentials.
 
-Returns the tenant's prepaid credit balance in USD. This is the endpoint the SDK's `billing.balance()` wraps, and also what the CLI's `vendo whoami` reads.
+## `GET /api/billing/balance`
+
+The SDK-facing balance endpoint. Returns the tenant's prepaid credit balance in integer micros (USD × 10⁶). This is what `vendo.billing.balance()` wraps in both the Python and TypeScript SDKs.
 
 ### Auth
 
 Accepts two Bearer formats:
 
 - **Vendo proxy key** (`vendo_sk_*`) — App Key or Connection Key. Tenant is read from the resolved key row.
-- **Supabase identity JWT** — issued by `auth.vendo.run`. JWKS-verified at `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`. JWKS is cached 10 minutes with one-shot refetch on `kid` miss. `exp` is enforced.
+- **Supabase identity JWT** — JWKS-verified at `${SUPABASE_URL}/auth/v1/.well-known/jwks.json` with `ensureTenant(sub, email)` fallback.
 
-Format detection is dot-segment count: opaque proxy keys never parse as JWTs.
+Format detection: tokens with exactly three dot-separated base64url segments are treated as JWTs; otherwise an opaque-key lookup runs.
 
 ### Request
 
 ```http
-GET /api/v1/balance HTTP/1.1
+GET /api/billing/balance HTTP/1.1
 Host: vendo.run
 Authorization: Bearer <vendo_sk_… or JWT>
 ```
@@ -30,24 +32,27 @@ Authorization: Bearer <vendo_sk_… or JWT>
 
 ```json
 {
-  "balance_usd": 12.5,
-  "tenant_id": "t_abc"
+  "credits_remaining_micros": 12500000,
+  "currency": "USD",
+  "top_up_url": "https://vendo.run/billing"
 }
 ```
 
-`balance_usd` is rounded to two decimals. Sourced from `wallets.balance_usd`.
+| Field | Type | Notes |
+|---|---|---|
+| `credits_remaining_micros` | `number` | Wallet balance in USD × 10⁶ (integer). Clamped at zero — never negative. |
+| `currency` | `string` | Always `"USD"` today |
+| `top_up_url` | `string` | Where to send the user to add credits |
+
+The SDK's `Balance` interface maps this directly: `creditsRemainingMicros` (TS) / `credits_remaining_micros` (Python).
 
 ### CORS
 
-Cross-origin: `*.vendo.run` origins are reflected with `Vary: Origin`; other origins get `*`. Methods `GET, OPTIONS`. Headers `Authorization, Content-Type`.
+Cross-origin: `*.vendo.run` origins reflected with `Vary: Origin`; other origins get `*`. Methods `GET, OPTIONS`. Headers `Authorization, Content-Type`.
 
 ### Rate limit
 
-60 requests per minute per IP. Exceeding returns `429`:
-
-```json
-{ "error": { "message": "Rate limit exceeded" } }
-```
+60 requests per minute per IP. Exceeding returns `429`.
 
 ### Errors
 
@@ -58,20 +63,85 @@ Cross-origin: `*.vendo.run` origins are reflected with `Vary: Origin`; other ori
 | `429` | `{ "error": { "message": "Rate limit exceeded" } }` | Over 60/min per IP |
 | `500` | `{ "error": { "message": "Internal server error" } }` | Vendo bug |
 
-### Edge cases
+## `GET /api/v1/balance`
+
+Legacy CORS-enabled balance endpoint. Used by the dashboard widget and the CLI's `whoami`. Same auth, same rate limit, **different response shape** (USD as a `number`, plus the resolved `tenant_id`).
+
+### Auth
+
+Identical to `/api/billing/balance` (App Key, Connection Key, or Identity JWT).
+
+### Response: `200 OK`
+
+```json
+{
+  "balance_usd": 12.5,
+  "tenant_id": "t_abc"
+}
+```
+
+`balance_usd` is rounded to two decimals. Sourced from `wallets.balance_usd`. Kept for backwards compatibility with pre-SDK clients; new code should call `/api/billing/balance` so the micros precision is preserved end-to-end.
+
+### CORS, rate limit, errors
+
+Same shape as `/api/billing/balance` above. Edge cases:
 
 - **Zero, negative, or no wallet** all return `200`. Negative `balance_usd` means the tenant is overdrawn (rare — usually a non-blocking billing race).
-- **Suspended tenants** still return `200`. Status enforcement happens at the app-proxy layer, not here. A suspended tenant can read their balance to know whether a top-up will resume them.
+- **Suspended tenants** still return `200`. Status enforcement happens at the app-proxy layer, not here.
 
 ## `GET /api/cli/balance`
 
-Same response shape as `/api/v1/balance`, restricted to `vendo_sk_*` keys (no JWT path). Rate-limited 30 req/min per IP. Used by the CLI to populate `vendo whoami`.
+CLI-only flavor of the same balance check. Restricted to `vendo_sk_*` keys (no JWT path). Rate-limited 30 req/min per IP. Server-to-server only — no CORS, no `OPTIONS` handler.
+
+### Response: `200 OK`
+
+```json
+{ "balance_usd": 12.5 }
+```
+
+Just `balance_usd` — no `tenant_id`, despite the shape suggestion in older docs.
+
+### Errors
+
+Error bodies are **flat** (no `error` wrapper) on this route:
+
+| Status | Body | Cause |
+|---|---|---|
+| `401` | `{ "message": "Missing Bearer token" }` | No `Authorization` header |
+| `401` | `{ "message": "Invalid or revoked API key" }` | Token unknown or revoked |
+| `429` | `{ "message": "Rate limit exceeded" }` | Over 30/min per IP |
+| `500` | `{ "message": "Internal server error" }` | Vendo bug |
 
 ## Per-deployment usage
 
-`GET /api/deployments/{id}/usage` returns hourly cost rollups for a specific deployment. **Owner-only**, authenticated via the dashboard session cookie — not exposed to deployed tools or external SDKs. Used by the dashboard usage charts. Query parameter `range` accepts `1h | 24h | 7d | 30d` (default `24h`).
+`GET /api/deployments/{id}/usage` returns hourly cost rollups for a specific deployment. **Owner-only**, authenticated via the dashboard session cookie — not exposed to deployed tools or external SDKs. Used by the dashboard usage charts.
 
-Response shape includes `providers` (bucketed metrics), `periods` (hourly breakdowns with meter-level cost), and `summary` (total cost + by-meter aggregate). See [`web/src/app/api/deployments/[id]/usage/route.ts`](https://github.com/runvendo/vendo/blob/main/web/src/app/api/deployments/%5Bid%5D/usage/route.ts) for the full shape.
+Query parameters:
+
+| Param | Default | Values |
+|---|---|---|
+| `range` | `24h` | `1h \| 24h \| 7d \| 30d` |
+
+Response shape: `{ providers, periods, summary }`. `periods[i].totalCost` and per-meter `cost`/`quantity` come back as **strings** (numeric); `summary.totalCost` comes back as a **number**. See [`web/src/app/api/deployments/[id]/usage/route.ts`](https://github.com/runvendo/vendo/blob/main/web/src/app/api/deployments/%5Bid%5D/usage/route.ts) for the full shape.
+
+## Tenant-level billing surface
+
+The full `/api/billing/*` surface (dashboard-only, session-authed):
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/billing/balance` | SDK-facing balance (documented above) |
+| `GET /api/billing/spend-caps` | Read/write daily and monthly spend caps (micros) |
+| `GET /api/billing/burn-rate` | Current spend velocity |
+| `GET /api/billing/usage` | Tenant-level usage rollup |
+| `GET /api/billing/customer` | Stripe customer profile snapshot |
+| `POST /api/billing/setup-intent` | Stripe SetupIntent for saving a card |
+| `POST /api/billing/reload` | Manual top-up |
+| `POST /api/billing/purchase` | Buy a credit pack |
+| `POST /api/billing/portal` | Open the Stripe customer portal |
+| `POST /api/billing/settle` | Manual ledger settle |
+
+These are not part of the SDK contract — the dashboard owns them — so they aren't documented as first-class endpoints. Source: `web/src/app/api/billing/*/route.ts`.
 
 <Callout type="info">
   Reading the balance is **advisory only**. The proxy is the enforcer — it returns `402` on any metered call past zero, whether or not your tool checked first. The reason to read the balance is UX: showing a banner before a long-running operation.

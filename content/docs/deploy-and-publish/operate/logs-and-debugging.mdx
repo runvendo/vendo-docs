@@ -17,9 +17,23 @@ A Vendo deployment writes to three distinct log surfaces. Each captures a differ
 
 Reads happen in the dashboard's Logs tab on each deployment. You don't need direct Railway or Cloudflare access.
 
+For operator-level access (when the dashboard isn't enough), each Cloudflare Worker logs separately and can be tailed via `wrangler tail`:
+
+| Worker | What it does | Tail command |
+|---|---|---|
+| `vendo-app-proxy` | Routes `{deployment_slug}.vendo.run` traffic to Railway. | `wrangler tail vendo-app-proxy` |
+| `vendo-hooks-worker` | Receives provider webhooks at `hooks.vendo.run/{external_id}` and forwards to the deployment. | `wrangler tail vendo-hooks-worker` |
+| `vendo-credentials-worker` | Serves `credentials.vendo.run/v1/token` to running deployments. | `wrangler tail vendo-credentials-worker` |
+| `vendo-credit-watchdog` | Hourly cron that suspends deployments at zero balance. | `wrangler tail vendo-credit-watchdog` |
+| `vendo-suspension-reaper` | Daily cron that destroys deployments suspended >90 days. | `wrangler tail vendo-suspension-reaper` |
+| `vendo-deploy-worker` | Runs `DeployWorkflow`, `UpgradeWorkflow`, `SuspendWorkflow`, `ResumeWorkflow`, `TeardownWorkflow`, `UpdateWorkflow`. | `wrangler tail vendo-deploy-worker` |
+| `vendo-update-watcher` | Hourly cron for customize-enabled auto-update detection. | `wrangler tail vendo-update-watcher` |
+
+The `*-proxy.vendo.run` subdomains (one per integration: `openrouter-proxy`, `anthropic-proxy`, `openai-proxy`, `telegram-proxy`, etc.) are their own Workers — tail each with `wrangler tail {provider}-proxy` when debugging metered upstream calls.
+
 ## Which to check first
 
-- **Deploy never reached `running`** → `deploy_logs`. The deploy worker's 13 phases (see [Railway deployments § Pipeline](/docs/infrastructure)) tell you exactly which step failed and why. `collect_app_logs_on_failure` runs automatically and dumps the container's build/runtime output into `deploy_logs` alongside the workflow trace.
+- **Deploy never reached `running`** → `deploy_logs`. The deploy worker's 14 timed phases — `validate_template`, `collect_secrets`, `provision_r2`, `provision_databases`, `resolve_env`, `deploy_compute`, `await_compute_done`, `domain_setup`, `health_check_done`, `bootstrap_admin`, `seed_app_credentials`, `sync_proxy_keys`, `await_domain_ready_done`, `provision_bundle` (see [Railway deployments § Pipeline](/docs/infrastructure)) — tell you exactly which step failed and why. `collect_app_logs_on_failure` runs automatically and dumps the container's build/runtime output into `deploy_logs` alongside the workflow trace.
 - **Deploy succeeded but the tool 500s** → compute logs. Your container's stdout/stderr is the source of truth.
 - **Tool returns 404 / "deployment not found"** → app-proxy logs. The KV mapping (`deploy:{subdomain}`) is either missing or wrong.
 - **Tool's API calls to OpenAI / Telegram / etc. fail with 401 or 402** → check the proxy adapter logs (a fourth surface, scoped to `{provider}-proxy.vendo.run`). 402 means the tenant's balance is zero. 401 typically means the proxy key is stale or the connection isn't bound.
@@ -31,10 +45,14 @@ Reads happen in the dashboard's Logs tab on each deployment. You don't need dire
 [deploy-abc123] collect_secrets             → ok (3 generated)
 [deploy-abc123] provision_databases         → ok (neon: pg-xyz)
 [deploy-abc123] deploy_compute              → ok (railway: project-789)
-[deploy-abc123] health_check_done           → FAILED (timeout after 300s)
+[deploy-abc123] health_attempt_1            → 503 (boot)
+[deploy-abc123] health_attempt_30           → 503 (no response)
+[deploy-abc123] health_check_failed         → FAILED (timeout after 300s)
 [deploy-abc123] collect_app_logs_on_failure → captured 47 lines
 [deploy-abc123]   container stderr: ECONNREFUSED 127.0.0.1:6379
 ```
+
+The `health_check` phase emits `health_attempt_N` rows on each poll and ends in either `health_check_done` (success) or `health_check_failed` (timeout / non-2xx). Look for the failure step name, not just the surrounding phase.
 
 Each row is structured — query `deploy_logs` by `deployment_id`, `step`, or `level` from the dashboard. The container logs captured on failure are inlined into the same table for convenience.
 
@@ -47,7 +65,7 @@ Each row is structured — query `deploy_logs` by `deployment_id`, `step`, or `l
    - `collect_secrets` — almost never fails; if it does, it's a Vendo platform issue.
    - `provision_databases` — Neon or Railway provisioning hiccup. Retry.
    - `deploy_compute` — image not pullable, build failed, or the registry rate-limited. Check the captured container logs.
-   - `health_check_done` — your readiness endpoint didn't respond 2xx in time. Most common cause: missing DB migration on first boot, or env var that's unset because of a missing integration binding.
+   - `health_check_failed` — your readiness endpoint didn't respond 2xx in time. Most common cause: missing DB migration on first boot, or env var that's unset because of a missing integration binding.
    - `bootstrap_admin` — your `seedEndpoint` returned an error. Check container logs.
    - `await_domain_ready_done` — Cloudflare cert provisioning timing out. Usually a platform issue; destroy + retry.
 4. If a quick fix is possible (e.g. integration not bound), do it and retry from the dashboard.

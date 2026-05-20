@@ -23,7 +23,7 @@ This command does **not** require login — the schema check is fully local.
 
 ## Schema source
 
-The validator uses [`vendo.schema.json`](https://github.com/runvendo/vendo-cli/blob/master/src/lib/vendo.schema.json), JSON Schema draft 7, executed via `ajv`. The same schema is what the Vendo deploy worker checks against — the CLI is just a local mirror.
+The validator uses [`vendo.schema.json`](https://github.com/runvendo/vendo-cli/blob/master/src/lib/vendo.schema.json), executed via `ajv@^8` with `allErrors: true` and `ajv-formats`. The schema's draft is whatever its `$schema` field declares. The same schema is what the Vendo deploy worker checks against — the CLI is just a local mirror.
 
 Full per-field reference: [vendo.yaml schema](/docs/reference/vendo-yaml-schema).
 
@@ -42,6 +42,12 @@ On failure, every problem is listed:
   • /name must match pattern "^[a-z][a-z0-9-]{1,62}[a-z0-9]$"
   • /version must be equal to constant: 1
 ```
+
+The validator also surfaces non-schema errors with their own messages:
+
+- `cannot read <path>: <reason>` — file missing or unreadable
+- `yaml parse error in <path>: <reason>` — YAML is not parseable
+- `vendo.yaml is empty or not an object` — top level is `null` or a scalar
 
 ## Examples
 

@@ -9,12 +9,19 @@ A **private deploy** is the same managed infrastructure tenants get from the pub
 
 ## How privacy actually works
 
-A tool's visibility is controlled by `apps_catalog.marketing.internal`. Set it to `true` and the catalog query filters the tool out of every public surface — the homepage, search, the integrations grid — while leaving deploys, the dashboard, the proxy, and billing fully functional.
+A tool's visibility is controlled by `apps_catalog.marketing->>'internal'`. Set the JSON path `marketing.internal` to `true` and the catalog query filters the tool out of every public and admin surface — the homepage, search, the integrations grid, `getAdminToolsCatalog()` — while leaving deploys, the dashboard, the proxy, and billing fully functional. The reader lives in [`web/src/lib/tools-catalog-server.ts`](https://github.com/runvendo/vendo/blob/main/web/src/lib/tools-catalog-server.ts) (filters on `coalesce(marketing->>'internal', 'false') <> 'true'`).
+
+Two separate flags work together in the catalog row:
+
+- `marketing.internal=true` — the privacy flag. Hides the row from listings.
+- `enabled=true` — required for the row to be deployable at all. Set it to `false` for half-finished entries that aren't ready for anyone, including you.
+
+There's also `tool_type='internal'` (used by `hermes-dev` in migration 292, for example). That's a separate classifier meaning "this row exists so something can FK to it, but it's not a deployment target." For private deploys you want `tool_type='deployment'` and `marketing.internal=true`.
 
 Internal entries are reachable in two ways:
 
 1. **Direct URL.** `/tools/{slug}` still resolves for anyone who knows the slug.
-2. **Admin or owner.** Vendo accounts with admin access (or your own account if you authored the catalog entry) see internal tools in their dashboard.
+2. **Admin or owner.** Vendo accounts with admin access (or your own account if you authored the catalog entry) can still deploy from internal rows — they just don't appear in the browse surfaces.
 
 Use this for staff-only tooling, a beta you're sharing with a single customer, or anything you want to operate on Vendo before it's ready for a public listing.
 
@@ -38,23 +45,28 @@ This path is rare. Prefer Path A unless you have a specific reason — Path B ex
 
 ## Minimum manifest for a private listing
 
-A private-deploy template is the same JSON file as any catalog template ([Manifest format](/docs/deploy-and-publish/publish-to-catalog/manifest)). The only differences are the seed migration that creates the row:
+A private-deploy template is the same JSON file as any catalog template ([Manifest format](/docs/deploy-and-publish/publish-to-catalog/manifest)). The only difference is the seed migration that creates the row:
 
 ```sql
 -- supabase/migrations/NNN_my_tool.sql
-INSERT INTO apps_catalog (slug, name, tool_type, auth_mode, category, marketing, enabled)
+INSERT INTO apps_catalog (
+  id, slug, name, tool_type, enabled, featured,
+  usage_category, allowed_callback_patterns, marketing
+)
 VALUES (
+  gen_random_uuid(),
   'my-tool',
   'My Tool',
   'deployment',
-  'password',
-  'productivity',
-  '{ "internal": true, "pricing": "credits" }'::jsonb,
-  true
+  true,
+  false,
+  'compute_general',
+  '{}'::text[],
+  '{ "internal": true, "pricing": "credits" }'::jsonb
 );
 ```
 
-…and the absence of marketing copy. Internal tools skip the `replaces` / `savings` / `monthlyCost` block — those fields only render on the public catalog card.
+…and the absence of marketing copy. Internal tools skip the `replaces` / `savings` / `monthlyCost` block — those fields only render on the public catalog card. The `auth_mode` column is nullable and only needed when your tool's `adminBootstrap.authMode` requires it; see [Submission](/docs/deploy-and-publish/publish-to-catalog/submission).
 
 ## Deploying it
 
@@ -62,7 +74,7 @@ Once the seed migration is applied and a `tool_releases` row exists, deploy the 
 
 ## Going public later
 
-Flip `marketing.internal` to `false` in a follow-up migration, add the marketing copy, and the tool starts appearing in catalog listings on the next read. Existing deployments are unaffected — they keep running on whatever release they were deployed against.
+Flip `marketing->>'internal'` to `false` (or remove the key) in a follow-up migration, add the marketing copy, and the tool starts appearing in catalog listings on the next cache revalidation (`getPublicToolsCatalog` uses `unstable_cache`). Existing deployments are unaffected — they keep running on whatever release they were deployed against.
 
 <Callout type="warn">
 Don't toggle `internal` directly in production via the database. Always do it through a migration so the change is reviewed and reversible.

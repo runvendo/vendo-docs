@@ -1,0 +1,113 @@
+---
+title: Request scoping
+description: forRequest and forUser — per-user identity in advanced Vendo deployments.
+---
+
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="warn">
+  Request scoping requires **Vendo mode** (`VENDO_API_KEY` must be set). Both methods throw `VendoOnlyFeature` in OSS mode.
+</Callout>
+
+When the Vendo proxy forwards a request to your deployment it can attach an `X-Vendo-User-JWT` header identifying the end user. `forRequest` / `forUser` clone the SDK client with that identity, so all subsequent token lookups resolve against that user's connections rather than the deployment-level ones.
+
+This is a low-level mechanism for advanced Vendo deployments. Most apps do not need it.
+
+## `forRequest(headers)` — inside a request handler
+
+<Tabs items={["Python", "TypeScript", "Swift"]}>
+  <Tab value="Python">
+    ```python
+    from fastapi import FastAPI, Request
+    from vendo import Vendo
+
+    app = FastAPI()
+
+    @app.get("/api/calendar")
+    async def calendar(request: Request):
+        client = Vendo().for_request(request.headers)
+        token = client.token("google")
+        return {"token": token}
+    ```
+
+    Raises `IdentityNotPresent` if `X-Vendo-User-JWT` is absent.
+  </Tab>
+  <Tab value="TypeScript">
+    ```typescript
+    import express from "express";
+    import { Vendo } from "@vendodev/sdk";
+
+    const app = express();
+
+    app.get("/api/calendar", async (req, res) => {
+      const client = new Vendo().forRequest(req.headers);
+      const token = await client.token("google");
+      res.json({ token });
+    });
+    ```
+
+    Throws `IdentityNotPresent` if `X-Vendo-User-JWT` is absent.
+  </Tab>
+  <Tab value="Swift">
+    ```swift
+    import Vapor
+    import Vendo
+
+    func calendarHandler(_ req: Request) async throws -> Response {
+        let headers = Dictionary(
+            uniqueKeysWithValues: req.headers.map { ($0.name.description, $0.value) }
+        )
+        let client = try vendo.forRequest(headers: headers)
+        let token = try await client.token("google")
+        return Response(body: .init(string: token))
+    }
+    ```
+
+    Throws `VendoError.identityNotPresent` if `X-Vendo-User-JWT` is absent.
+  </Tab>
+</Tabs>
+
+## `forUser(jwt)` — background jobs
+
+When you already have the JWT in hand (from a queue message, background job context, etc.):
+
+<Tabs items={["Python", "TypeScript", "Swift"]}>
+  <Tab value="Python">
+    ```python
+    from vendo import Vendo
+
+    async def process_job(user_jwt: str):
+        client = Vendo().for_user(user_jwt)
+        token = client.token("openai")
+    ```
+  </Tab>
+  <Tab value="TypeScript">
+    ```typescript
+    import { Vendo } from "@vendodev/sdk";
+
+    async function processJob(userJwt: string) {
+      const client = new Vendo().forUser(userJwt);
+      const token = await client.token("openai");
+    }
+    ```
+  </Tab>
+  <Tab value="Swift">
+    ```swift
+    import Vendo
+
+    func processJob(userJwt: String) async throws {
+        let client = vendo.forUser(jwt: userJwt)
+        let token = try await client.token("openai")
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Error reference
+
+| Error | When |
+|-------|------|
+| `VendoOnlyFeature` | `VENDO_API_KEY` is not set |
+| `IdentityNotPresent` | `X-Vendo-User-JWT` header is missing (from `forRequest` only) |
+| `AuthError` | JWT is invalid or expired |

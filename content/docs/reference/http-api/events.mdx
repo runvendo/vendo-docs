@@ -43,7 +43,7 @@ data: <json-payload>
 | `connection.connected` | `slug`, `connection_id` | Tenant connected an integration |
 | `connection.disconnected` | `slug`, `connection_id` | Tenant disconnected an integration |
 | `connection.changed` | `slug`, `connection_id` | Binding metadata changed |
-| `connection.status_changed` | `slug`, `connection_id`, `status` | Connection status moved (`connected`, `available`, `pending_setup`, `needs_reauth`, `error`, `revoked`) |
+| `connection.status_changed` | `slug`, `connection_id`, `status` | Connection status moved. `status` is one of `connected`, `needs_reauth`, `revoked`, `error` — the event bus drops any other DB status. |
 | `billing.usage_recorded` | `provider`, `micros` | A call was billed (USD × 10⁶) |
 | `billing.balance_changed` | `remaining_micros` | Wallet balance updated |
 | `billing.cap_warned` | `window` (`daily` \| `monthly`), `pct` | App-level spend cap crossed a warning threshold |
@@ -65,7 +65,22 @@ Each alias is a separate SSE block — your EventSource fires both listeners wit
 
 ### Concurrency cap
 
-Each app may hold a small number of concurrent SSE streams. Exceeding the cap returns `429` with body `{ "error": { "message": "rate_limit_sse_streams" } }`. The cap is advisory and racey under burst — closing an idle stream frees a slot. Reuse a single subscription per process where possible.
+Each app may hold up to **5 concurrent SSE streams** (`MAX_STREAMS_PER_APP` in `web/src/app/api/deployments/me/events/active-count.ts`). Exceeding the cap returns `429` with the canonical error envelope:
+
+```json
+{
+  "error": {
+    "code": "rate_limit_sse_streams",
+    "message": "Too many concurrent SSE streams."
+  }
+}
+```
+
+The response also carries a `Vendo-Error-Code: rate_limit_sse_streams` header. The cap is advisory and racey under burst — closing an idle stream frees a slot. Reuse a single subscription per process where possible.
+
+### Replay buffer
+
+`Last-Event-ID` replay reaches back up to **100 events per app** (`web/src/lib/sse/event-bus.ts` ring buffer). Beyond that, treat events as cache-invalidation signals and re-read [`GET /api/deployments/me/connections`](connections) on reconnect.
 
 ### Example
 
@@ -90,7 +105,7 @@ data: {"id":"evt_01H…","at":"2026-05-20T12:00:01Z","kind":"billing.usage_recor
 ```
 
 <Callout type="warn">
-  The stream does not buffer events while disconnected beyond what `Last-Event-ID` can replay. For durable state, treat events as cache invalidation signals and re-read from [`GET /api/deployments/me/connections`](connections) on reconnect.
+  The ring buffer holds the last 100 events per app. Once `Last-Event-ID` falls outside that window, replay is incomplete — treat events as cache-invalidation signals and re-read from [`GET /api/deployments/me/connections`](connections) on reconnect.
 </Callout>
 
 ### Related

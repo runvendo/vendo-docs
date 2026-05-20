@@ -38,4 +38,8 @@ You almost never need to read these yourself — the SDK picks them up automatic
 - Per-provider API keys (Stripe, OpenAI, Anthropic, etc.). Those flow through the proxy via `vendo.data.execute(...)` — your code never sees the raw key.
 - `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc. — even when an LLM provider is connected, the key lives in the proxy, not the sandbox env.
 
-If you need a provider key in env for a third-party SDK that won't accept the proxy URL, declare it in your tool's `vendo.yaml` `env_bootstrap` and the deploy worker will inject it.
+If you need a provider key in env for a third-party SDK that won't accept the proxy URL, that's an integration concern, not a `vendo.yaml` field. The platform's per-integration env-var contract lives in `packages/integrations/<slug>/integration.ts::connectionEnvVars` (and the `integrations_catalog.env_bootstrap` column the build-integrations script reads); request a new mapping by opening an issue rather than adding a key to your manifest.
+
+## Other env vars the SDK consults
+
+- `VENDO_CONNECTIONS` — a comma-separated slug list the Python SDK uses as an env-bootstrap fallback when the API is unavailable. It carries slugs only (no context), so `connection.context` is `None` for any provider bootstrapped from this var. Set only when needed for offline / OSS-mode testing.

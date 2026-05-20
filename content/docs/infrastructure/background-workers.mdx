@@ -1,0 +1,88 @@
+---
+title: Background workers
+description: The cron workers whose names appear in logs and support tickets — what each one does, on what cadence, and what tenants observe.
+---
+
+Vendo runs a fleet of small Cloudflare Workers on cron triggers. None of them are on a tenant's request path — they're billing, lifecycle, monitoring, and webhook surfaces that operate in the background. You don't deploy or scale these; this page exists so when one of their names appears in a log line or a support reply, you know what you're looking at.
+
+Schedules and behavior are sourced from each worker's `wrangler.toml` (`triggers.crons`) and `src/index.ts` in the monorepo.
+
+## Billing and credit lifecycle
+
+### `billing-rollup`
+
+- **Cron**: `10 * * * *` (hourly, with a 10-minute grace after the hour).
+- **What it does**: Reads `provider_usage` rows for the previous hour, resolves per-`(tenant, meter)` margin from `margin_rules`, and writes billed usage events plus credit deductions via the `record_billed_usage` RPC. The 10-minute grace lets in-flight provider-usage writes settle before the rollup queries them.
+- **What tenants see**: Deferred (hourly) credit deductions for compute/database/storage usage. LLM/TTS/transcription calls bill in real-time via the provider proxies; this worker handles infra-level meters.
+
+### `credit-watchdog`
+
+- **Cron**: `*/5 * * * *` (every 5 minutes).
+- **What it does**: Groups deployments by tenant, computes a rolling hourly burn rate from recent credit debits, and decides one of: `noop`, `warn` (email when projected runway < `WARN_HOURS`), `reload` (Stripe charge when a saved card is armed), `suspend` (compute paused when balance ≤ 0 and no auto-reload available).
+- **What tenants see**: Low-balance emails, auto-reload charges on the saved card, and deployment suspension when the wallet is empty.
+
+### `provider-balance-collector`
+
+- **Cron**: `0 * * * *` (hourly).
+- **What it does**: Pulls Vendo's own upstream provider balances (OpenRouter, Stripe, Railway, Neon, ElevenLabs, Cloudflare, MuAPI) and upserts them into `provider_balances` for the admin balance dashboard.
+- **What tenants see**: Nothing — this is operator-side monitoring.
+
+### `usage-collector`
+
+- **Cron**: `*/5 * * * *` (every 5 minutes).
+- **What it does**: Samples infrastructure metrics from Railway, Neon, and Cloudflare for every `running` deployment, then writes one `provider_usage` row per `(deployment, provider)` per tick. `billing-rollup` later turns these into billable events.
+- **What tenants see**: Per-deployment compute/database/storage cost on the billing page (latency ≈ one hour from sample to billed line).
+
+## Deployment lifecycle
+
+### `health-monitor`
+
+- **Cron**: `*/15 * * * *` (every 15 minutes).
+- **What it does**: Probes each `running` deployment's healthcheck URL with a 10-second timeout. Writes a row to `health_checks` and updates the deployment's `consecutive_failures` + `health_status`. 3 consecutive failures → `degraded`; a single success resets to `healthy`. See [Healthchecks](/docs/infrastructure/healthchecks).
+- **What tenants see**: The `degraded` badge on the deployment list / detail page when probes are failing.
+
+### `update-watcher`
+
+- **Cron**: `0 * * * *` (hourly).
+- **What it does**: For each customize-enabled tool, fetches the upstream `HEAD` once, then walks active deployments to evaluate cadence + kill-switch + in-flight + weekly cap. On green, inserts a `pending_updates` row that powers the "Update available" banner.
+- **What tenants see**: The "Update available" banner on the deployment dashboard.
+
+### `customize-reaper`
+
+- **Cron**: `* * * * *` (every minute).
+- **What it does**: Manages the customize-chat sandbox lifecycle. Verifies running sandboxes still exist on E2B's control plane, kills stuck-starting rows past their grace window, pauses idle sandboxes after 15 minutes of inactivity, kills paused sandboxes after 24 hours, and flips orphaned deploy_events past their timeout to `failed`.
+- **What tenants see**: A clean customize-chat experience — closed sandboxes free up automatically; "Build timed out" messages instead of indefinite spinners.
+
+### `suspension-reaper`
+
+- **Cron**: `0 2 * * *` (daily at 02:00 UTC).
+- **What it does**: Drives the suspended → destroyed lifecycle. Sends a 7-day warning email at day 83, a 1-day warning at day 89, and triggers teardown at day 90 via the deploy-worker service binding. Resuming the deployment at any point before day 90 resets the clock.
+- **What tenants see**: Warning emails about pending destruction, and eventual teardown if the deployment is never resumed.
+
+### `test-reaper`
+
+- **Cron**: `*/30 * * * *` (every 30 minutes).
+- **What it does**: Safety net for the integration-test harness. Tears down any `is_test=true` deployment older than 2 hours via the deploy-worker, then cascades the orphaned tenant/test rows in FK order. A `TEST_REAPER_DRY_RUN=true` mode logs the plan without acting.
+- **What tenants see**: Nothing — this only touches test-flagged tenants used by Vendo's CI.
+
+## Monitoring
+
+### `registry-monitor`
+
+- **Cron**: `*/5 * * * *` (every 5 minutes).
+- **What it does**: Probes Vendo's container registry (`/v2/` ping; HTTP `401` from the Bearer-realm challenge is the healthy response). Three consecutive failures emit an ERROR log for alerting.
+- **What tenants see**: Nothing directly. When this fires, customize builds and image pulls might be degraded.
+
+## Inbound webhooks
+
+### `hooks-worker`
+
+- **Trigger**: HTTP on `hooks.vendo.run/<connection_external_id>` (not a cron).
+- **What it does**: Receives provider webhooks (Telegram bot updates today; more providers later). Looks up the connection by `external_id`, verifies the provider's signature (e.g. Telegram's secret-token header), signs an inner Vendo envelope with the bound app's `webhook_secret`, and forwards to the deployment URL stored in `connection.metadata.webhook.deployment_url`. Synchronous forward: if the deployment returns non-2xx, the upstream provider sees the same status.
+- **What tenants see**: Inbound bot updates arriving at the deployment with `x-vendo-connection-id`, `x-vendo-provider`, and a signed envelope header. Operators can set `HOOKS_VERIFY_SOURCE_IP=1` to additionally filter inbound IPs against the provider's published CIDR ranges (off by default).
+
+## Related
+
+- [Healthchecks](/docs/infrastructure/healthchecks) — the `health-monitor` contract from the tool author's side.
+- [Scaling and limits](/docs/infrastructure/scaling-and-limits) — how `credit-watchdog` and `suspension-reaper` interact with your wallet.
+- [Logs and observability](/docs/infrastructure/logs-and-observability) — where these workers' logs surface when one of them touches your deployment.

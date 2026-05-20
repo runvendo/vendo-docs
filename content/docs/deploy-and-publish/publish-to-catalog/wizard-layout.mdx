@@ -5,82 +5,140 @@ description: Design the configure-step UX tenants see when they deploy your tool
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-When a tenant clicks **Deploy** on your catalog listing, they go through a wizard: account, configure, optionally pay, launch. The **configure** step is yours to design. The `wizardLayout` field in the manifest controls how it's split into groups, how integrations are presented, and where each `userInputs[]` entry lands.
+When a tenant clicks **Deploy** on your catalog listing, they go through a wizard: account, configure, optionally pay, launch. The **configure** step is yours to shape. The `wizardLayout` field in the manifest splits that step into sub-steps and decides which integrations and `userInputs[]` keys render in each one.
 
 ## When you need it
 
-If `wizardLayout` is omitted (or `null`), the wizard renders a single page with every `userInputs[]` entry and every required integration stacked vertically. Fine for tools with 2–3 inputs. Painful at 10+.
+If `wizardLayout` is omitted (or `null`), the wizard falls back to a single-page Configure that stacks every required integration and every `userInputs[]` entry vertically. Fine for tools with 2–3 inputs. Painful at 10+.
 
 Define `wizardLayout` when:
 
 - You have more than ~5 user inputs.
-- Some inputs are advanced and you want them in a separate step.
-- You want a specific ordering for required integrations vs user inputs.
-- You want a step dedicated to "connect provider X" before another step dedicated to "configure provider Y."
+- You want a "name your deployment" step separate from "connect integrations" separate from "advanced settings."
+- Some inputs are optional and you want them in a dedicated step.
+- You want a specific ordering for integrations vs user inputs.
 
 ## Shape
 
+The real schema lives in [`manifest.schema.json`](https://github.com/runvendo/vendo/blob/main/cloudflare/deploy-worker/src/schema/manifest.schema.json) (`WizardLayout`, `WizardSubStep`, `WizardSection` defs) with the matching Zod parser in [`web/src/lib/wizard-layout.ts`](https://github.com/runvendo/vendo/blob/main/web/src/lib/wizard-layout.ts). The contract:
+
 ```jsonc
 "wizardLayout": {
-  "groups": [
+  "version": 1,
+  "subSteps": [
     {
+      "id": "name",
+      "title": "Name your deployment",
+      "sections": [
+        { "type": "deployment_name" },
+        { "type": "workspace" }
+      ]
+    },
+    {
+      "id": "connect",
       "title": "Connect integrations",
-      "description": "Bind the providers this tool needs.",
-      "items": [
-        { "type": "integration", "provider": "openrouter" },
-        { "type": "integration", "provider": "telegram" }
+      "sections": [
+        { "type": "integration", "providers": ["openrouter", "telegram"] }
       ]
     },
     {
+      "id": "configure",
       "title": "Basic settings",
-      "items": [
-        { "type": "input", "key": "BOT_NAME" },
-        { "type": "input", "key": "DEFAULT_LOCALE" }
+      "sections": [
+        { "type": "wizard_inputs", "groups": ["basic"] }
       ]
     },
     {
+      "id": "advanced",
       "title": "Advanced",
       "description": "Optional — defaults work for most cases.",
-      "items": [
-        { "type": "input", "key": "RATE_LIMIT_RPM" },
-        { "type": "input", "*": true }
+      "optional": true,
+      "sections": [
+        { "type": "wizard_inputs", "groups": ["*"] },
+        { "type": "tool_extras" }
       ]
     }
   ]
 }
 ```
 
-Each `groups[]` entry becomes a step. Each `items[]` entry is either an `integration` (resolved by `provider` slug) or an `input` (resolved by `userInputs[]` `key`).
+- `version` is always `1`.
+- `subSteps[]` becomes the wizard pages. Each sub-step needs an `id` (URL-safe, used in `?phase={id}`), a `title` (≤60 chars), and a non-empty `sections[]`.
+- `optional: true` on a sub-step renders a Skip button and never blocks Continue.
+- `sections[]` is a discriminated union by `type`.
+
+## Section types
+
+| `type` | Renders | Notes |
+|---|---|---|
+| `deployment_name` | The deployment-slug input. | Add once, usually in the first sub-step. |
+| `workspace` | Workspace picker (workspaces are tenant-side groupings). | Optional in single-workspace tenants. |
+| `admin_credentials` | Email + password for the seeded admin. | Only when `adminBootstrap.authMode = "api_seed"` or `"manual_setup"`. |
+| `wizard_inputs` | A subset of `userInputs[]`. Filtered by the `groups: string[]` field below. | The only section type that filters by an array. |
+| `integration` | Integration-binding rows for the providers listed in `providers: string[]`. | Filtered by integration `provider` slug. |
+| `tool_extras` | Per-tool extras (deploy-hook config, custom toggles a tool registers). | Most tools don't need this. |
+
+The full list is defined in [`web/src/lib/wizard-layout.ts`](https://github.com/runvendo/vendo/blob/main/web/src/lib/wizard-layout.ts) — that file is the authoritative spec.
+
+## Filtering with `groups[]` and `providers[]`
+
+Two section types take a filter array:
+
+- `wizard_inputs.groups: string[]` matches each `userInputs[]` entry by its `wizardStep` field. An entry whose `wizardStep` is in the section's `groups` array renders here.
+- `integration.providers: string[]` matches each entry in your top-level `integrations[]` by `provider` slug.
+
+The sentinel `["*"]` means "everything not placed by an earlier sub-step." Both filter arrays default to `["*"]` when omitted. Use it in your last sub-step so a forgotten input or integration still surfaces.
+
+```jsonc
+{
+  "type": "wizard_inputs",
+  "groups": ["basic"]      // only userInputs with wizardStep="basic"
+},
+{
+  "type": "wizard_inputs",
+  "groups": ["*"]          // everything else not already placed
+}
+```
+
+```jsonc
+{
+  "type": "integration",
+  "providers": ["openrouter"]
+},
+{
+  "type": "integration",
+  "providers": ["*"]        // sweeps remaining providers
+}
+```
+
+<Callout type="warn">
+A `userInputs[]` entry whose `wizardStep` matches no section's `groups` (and where no section has `["*"]`) is silently dropped from the wizard. The deploy worker will still inject the entry's `default` value if one is set, but the tenant has no way to override. Always end with a `["*"]` sweep.
+</Callout>
 
 ## Resolution rules
 
-- **First occurrence wins.** If you list the same integration or input key in two groups, only the first occurrence renders.
-- **`["*"]` sweeps the remainder.** `{ "type": "input", "*": true }` catches every `userInputs[]` key not explicitly placed earlier. Use it in your "Advanced" or final group.
-- **Anything not in `wizardLayout` is not rendered.** Forgetting to add a key (and no `["*"]` sweep) silently drops it from the wizard. The deploy worker still injects the default if you set one in `userInputs[]`, but the tenant has no way to override.
-- **Required integrations always block submission**, regardless of which group they appear in. `optional: true` integrations can be skipped.
-
-<Callout type="warn">
-The first-occurrence rule is fail-quiet. Always add a `["*"]` input sweep in your last group so a forgotten key still appears in the wizard.
-</Callout>
+- **First match wins.** If two sub-steps could render the same input or provider, only the first one does. The second is a no-op.
+- **Required integrations always block submission**, regardless of which sub-step they appear in. Mark them `"optional": true` on the top-level `integrations[]` entry if they're skippable.
+- **Empty arrays render nothing.** `"groups": []` is valid and means "skip this section." Useful for `showWhen`-style conditional gating (when v2 lands).
 
 ## Designing the steps
 
 Three patterns that work:
 
-**Pattern 1 — providers first, then config.** Most common shape. Tenants connect every integration in step 1, then configure your tool's behavior in step 2.
+**Pattern 1 — name, connect, configure.** Three sub-steps: `deployment_name`/`workspace` → `integration` (all providers) → `wizard_inputs` (`["*"]`). Hermes uses a flatter two-step variant of this.
 
-**Pattern 2 — single Configure step.** Skip `wizardLayout`. Right for tools with 1–3 inputs and zero or one integration.
+**Pattern 2 — single Configure step.** Skip `wizardLayout` entirely. Right for tools with 1–3 inputs and zero or one integration.
 
-**Pattern 3 — providers, basics, advanced.** Three steps. Use this when you have optional inputs with sane defaults that you want hidden behind an "Advanced" expansion.
+**Pattern 3 — name, connect, basics, advanced.** Four sub-steps. Promote the most common inputs (`wizardStep: "basic"`) to step 3; sweep the rest into step 4 with `optional: true` so tenants can skip past it.
 
-Keep group titles imperative ("Connect Telegram", "Configure the bot"), not descriptive. Tenants are doing each step, not reading about it.
+Keep titles imperative ("Connect Telegram", "Configure the bot"), not descriptive. Tenants are doing each step, not reading about it.
 
 ## Where it ends up
 
-`wizardLayout` is written to `tool_releases.wizard_layout` by the vendo-templates sync action. The Configure step UI in [`web/src/components/onboarding/`](https://github.com/runvendo/vendo/tree/main/web/src/components/onboarding) reads from there. The resolver lives in [`web/src/lib/wizard-layout-resolver.ts`](https://github.com/runvendo/vendo/blob/main/web/src/lib/wizard-layout-resolver.ts) and is the authoritative spec when shape questions come up.
+The vendo-templates sync action copies `wizardLayout` verbatim into `tool_releases.wizard_layout`. The deploy modal at [`web/src/components/onboarding/`](https://github.com/runvendo/vendo/tree/main/web/src/components/onboarding) reads from that column and renders each sub-step in order. The wizard-inputs sync also extracts `userInputs[]` into `tool_releases.wizard_inputs` (with `wizardStep` preserved) so the section filters can match.
 
 ## Iterating
 
-Wizard layout is part of the manifest, so changes ship as new versions. You don't need a code release to re-order the wizard — just a new `{slug}/{version}.json` and a release migration. Existing tenants keep the layout they deployed against; new deploys use the active release's layout.
+Wizard layout is part of the manifest, so changes ship as new versions. You don't need a code release to re-order the wizard — just push a new `{slug}/{version}.json` to vendo-templates and write the matching release migration. Existing tenants keep the layout they deployed against; new deploys use the active release's layout.
 
 Next: [Submission](/docs/deploy-and-publish/publish-to-catalog/submission) — opening the PR.

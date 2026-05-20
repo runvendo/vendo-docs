@@ -4,39 +4,43 @@ description: The manifest at the root of your repo that tells Vendo what your to
 ---
 
 import { Card, Cards } from "fumadocs-ui/components/card";
+import { Callout } from "fumadocs-ui/components/callout";
 
-`vendo.yaml` is a deploy-time manifest. It lives at the root of your repo, and Vendo reads it the moment a tenant clicks **Deploy** in the dashboard (and again every time you cut a new release). It is the contract between your tool and the platform: what providers you talk to, what configuration the tenant has to supply, what env vars get injected at boot, and how Vendo decides whether your container is healthy.
+`vendo.yaml` is a deploy-time manifest. It lives at the root of your repo and the Vendo CLI validates it before you ship a release. It is the contract between your tool and the platform: what providers you talk to, what env vars your code requires, and how Vendo decides whether your container is healthy.
 
 The SDK does not read `vendo.yaml`. The runtime contract — env vars, proxy URLs, the `vendo_sk_*` key — is set up by the platform based on what the manifest declares, and your code reads it from `process.env` / `os.environ` like any other configuration.
 
+<Callout type="info">
+  `vendo.yaml` and the **template manifest** are two different files. `vendo.yaml` lives in your tool's repo and declares the tool's intent at the schema below. The release pipeline transforms it into a template manifest (`templates/<slug>/<version>.json` in `vendo-templates`), which carries richer fields like `services`, `databases`, `secrets`, `userInputs`, and `wizardLayout` — those are documented in [Deploy & publish → Manifest](/docs/deploy-and-publish/publish-to-catalog/manifest). The deploy worker reads the **template manifest** from R2 at deploy time, not your `vendo.yaml`.
+</Callout>
+
 ## What it controls
+
+`vendo.yaml` has exactly these fields. The canonical schema is [`vendo-cli/src/lib/vendo.schema.json`](https://github.com/runvendo/vendo-cli/blob/main/src/lib/vendo.schema.json) — every undeclared key fails validation.
 
 ```yaml
 name: my-tool          # catalog slug, immutable once set
 version: 1             # manifest schema version (always 1 today)
-runtime: python        # hint for the dashboard
-integrations:          # providers your tool calls through Vendo's proxy
-  - provider: openrouter
-  - provider: telegram
-    optional: true
-userInputs:            # config the tenant fills in the deploy wizard
-  - key: GREETING
-    label: Greeting message
-    inputType: text
-env:                   # static env contract
+runtime: python        # optional hint: python | node | go | rust | ruby | java | other
+integrations:          # optional: providers your tool calls through Vendo's proxy
+  - openrouter
+  - telegram
+env:                   # optional: env contract
   required: [DATABASE_URL]
   optional: [LOG_LEVEL]
-health:                # how Vendo decides your container is up
+health:                # optional: how Vendo decides your container is up
   path: /healthz
-  port: 8080
+  port: 8787
+restart_on:            # optional: integration slugs whose connection-state changes restart the app
+  - openrouter
 ```
 
-Six concerns. Each gets its own page below.
+Only `name` and `version` are required. Each concern below gets its own page.
 
 <Cards>
   <Card
     title="Integrations"
-    description="Declare the providers (OpenRouter, Telegram, Stripe…) your tool talks to."
+    description="Declare the providers (OpenRouter, Telegram, Composio…) your tool talks to."
     href="/docs/build-a-tool/vendo-yaml/integrations"
   />
   <Card
@@ -60,8 +64,8 @@ Six concerns. Each gets its own page below.
 
 `vendo.yaml` is consumed at two points and nowhere else:
 
-1. **Release time.** When you push a new version of your tool, Vendo's release pipeline reads the manifest, validates it against the schema, and writes the resolved values (`integrations`, `userInputs`, `wizardLayout`) into `tool_releases` for that version. Existing deployments stay pinned to the version they were deployed on; new deployments pick up the new manifest.
-2. **Deploy time.** When a tenant deploys your tool, the deploy worker reads the resolved release record, asks the tenant for any `userInputs`, binds connections for each integration, materializes the env var set, and starts your container with all of that in place.
+1. **Release time.** When you push a new version of your tool, the release pipeline reads `vendo.yaml`, validates it against the schema, and uses it (alongside the tool's template manifest in `vendo-templates`) to write the resolved release record in `tool_releases`. Existing deployments stay pinned to the version they were deployed on; new deployments pick up the new manifest.
+2. **Deploy time.** When a tenant deploys your tool, the deploy worker reads the **template manifest** from R2 (`templates/<slug>/<version>.json`), resolves placeholders against the deployment context, materializes env vars, and starts your container. It does not re-read `vendo.yaml`.
 
 After that, the manifest plays no role. Your code never reads it; the SDK never reads it. Everything is plain env vars from your code's point of view.
 
@@ -69,12 +73,28 @@ After that, the manifest plays no role. Your code never reads it; the SDK never 
 
 `version: 1` refers to the manifest *schema*, not your tool's release. It stays `1` indefinitely — new fields are added as optional, and breaking changes get a new major version that the platform supports in parallel for at least one release cycle.
 
-Your tool's own version is separate, tracked in `tool_releases.version` (e.g. `1.0.7`, `2.0.0`). You bump it whenever you ship a meaningfully different build. Each version is a frozen snapshot of `vendo.yaml` plus the container image SHA — existing tenants on the old version aren't affected until they opt into an upgrade.
+Your tool's own version is separate (e.g. `1.0.7`, `2.0.0`), bumped whenever you ship a meaningfully different build. Each version is a frozen snapshot of `vendo.yaml` plus the container image SHA — existing tenants on the old version aren't affected until they opt into an upgrade.
 
 ## Validation
 
-The release pipeline validates `vendo.yaml` against the canonical schema and fails loudly on drift. See [Reference](/docs/reference) for the full field list and types.
+You can validate locally before pushing:
 
-## Legacy fields
+```bash
+npx @vendodev/cli validate ./vendo.yaml
+```
 
-Older manifests used `requires:` (now `integrations:`), `variables:` (now `userInputs:`), and `templateVersion:` (gone — schema version is implied by `version: 1`). The platform still accepts the old names for one grace period, but new manifests should use the current spelling.
+The release pipeline runs the same check and fails loudly on drift. The CLI prints the offending field path, the expected shape, and a one-line fix hint.
+
+## Restart on connection change
+
+`restart_on:` lists integration slugs whose connection-state changes should trigger a process restart. If a tenant rotates their OpenAI key, restarts an OAuth grant, or swaps a Telegram bot token, the deployment is restarted so your code picks up the new value at boot. Example:
+
+```yaml
+integrations:
+  - openrouter
+  - telegram
+restart_on:
+  - openrouter
+```
+
+Connection rebinds always update `deployment_env_vars` whether the slug is in `restart_on` or not — what `restart_on` adds is the process restart so a long-lived client doesn't hold a stale token.

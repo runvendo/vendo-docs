@@ -13,7 +13,7 @@ pip install "vendo-sdk[http]"
 pip install "vendo-sdk[async]"
 ```
 
-**Requirements:** Python 3.9+, stdlib only for the base install.
+**Requirements:** Python 3.11+, stdlib only for the base install.
 
 ## OSS mode (no account needed)
 
@@ -36,7 +36,7 @@ bot_token = vendo.token("telegram")  # returns TELEGRAM_BOT_TOKEN
 
 ## Vendo mode (OAuth refresh + managed keys)
 
-Set `VENDO_API_KEY` from your [Vendo dashboard](https://vendo.run):
+Set `VENDO_API_KEY` from your [Vendo dashboard](https://vendo.run). Keys start with the `vendo_sk_` prefix and are sent as `Authorization: Bearer <key>` to the proxy.
 
 ```bash
 VENDO_API_KEY=vendo_sk_...
@@ -65,23 +65,29 @@ tokens = vendo.tokens(["openai", "slack", "telegram"])
 
 ## Pre-authed requests session
 
-Requires `pip install "vendo-sdk[http]"`. Auto-refreshes on 401:
+Requires `pip install "vendo-sdk[http]"`. Auto-refreshes on 401. Use a slug that exists in the BYOK catalog (or in Vendo-mode connections):
 
 ```python
-sess = vendo.session("google")
-resp = sess.get("https://www.googleapis.com/calendar/v3/calendars/primary")
+sess = vendo.session("gmail")
+resp = sess.get("https://gmail.googleapis.com/gmail/v1/users/me/profile")
 ```
 
 ## Async usage
 
-Requires `pip install "vendo-sdk[async]"`:
+`AsyncVendo` works out of the box on the stdlib (`urllib` + `asyncio.to_thread`). The `[async]` extra installs `aiohttp` as a performance optimization — it is not required:
+
+```bash
+pip install "vendo-sdk[async]"  # optional; faster HTTP
+```
+
+`AsyncVendo()` is Vendo-mode-only — it requires `VENDO_API_KEY` (the constructor raises `AuthError` otherwise). For OSS / BYOK use the sync top-level `vendo.token(...)` instead.
 
 ```python
 import asyncio
 from vendo import AsyncVendo
 
 async def main():
-    async with AsyncVendo() as client:
+    async with AsyncVendo() as client:  # needs VENDO_API_KEY
         token = await client.token("openai")
         connections = await client.connections.list()
 
@@ -92,6 +98,18 @@ asyncio.run(main())
 
 ```python
 vendo.is_vendo_mode()  # True if VENDO_API_KEY is set
+```
+
+## Per-slug override (escape hatch)
+
+Set `VENDO_TOKEN_<UPPER_SLUG>` to short-circuit the resolution chain for a specific slug. This wins over both Vendo mode and the BYOK env var, and is useful when testing a custom integration that isn't in the catalog:
+
+```bash
+VENDO_TOKEN_MYTOOL=sk-test-...
+```
+
+```python
+vendo.token("mytool")  # returns the override value
 ```
 
 ## Next steps

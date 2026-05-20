@@ -11,9 +11,11 @@ This page is the canonical reference for that flow. You don't write any code aga
 
 ## The ledger
 
-A tenant's balance is the sum of an append-only `credits` table. Positive rows are purchases or grants; negative rows are usage deductions. Internally everything is integer micro-USD (`1` = `$0.000001`); USD is only the display format. Nothing in the ledger is editable — corrections happen by inserting a compensating row.
+A tenant's balance is the sum of an append-only `credits` table. Positive rows are purchases or grants; negative rows are usage deductions, refunds, or disputes. The authoritative amount column is `credits.amount_micros` (`bigint`, NOT NULL — see `supabase/migrations/079_credits_amount_micros_authoritative.sql`); `1` = `$0.000001`. The rolled-up balance lives at `wallets.balance_usd` (`numeric(12,6)`), kept in sync by the `sync_wallet_on_credit` trigger.
 
-Tenants live 1:1 with a Stripe customer. The first time a tenant clicks "Add credits", Vendo creates the Stripe customer record and runs a Payment Intent for the amount they picked. On success, a positive row lands in `credits` and the cached balance (`balance:{tenant_id}` in Cloudflare KV, 60-second TTL) is invalidated.
+Nothing in the ledger is editable — `fn_credits_no_mutation` (`supabase/migrations/118_credits_append_only.sql`) is a `BEFORE UPDATE/DELETE` trigger that raises on every direct mutation. Migration `122_credits_append_only_test_carve_out.sql` adds a session-local `app.allow_credits_mutation` carve-out used only by the `delete_test_tenants_cascade` cleanup RPC. Corrections in production happen by inserting a compensating row (with `source` like `'refund'`, `'dispute'`, or an admin `admin_refund_credit`).
+
+Tenants live 1:1 with a Stripe customer. The first time a tenant clicks "Add credits", Vendo creates the Stripe customer record and runs a Payment Intent for the amount they picked. Stripe refuses Payment Intents under $0.50, so the worker rejects anything below that (`STRIPE_MIN_USD = 0.5` in `workers/credit-watchdog/src/index.ts`). On success, a positive row lands in `credits` and the cached balance (`balance:{tenant_id}` in Cloudflare KV, 60-second TTL) is invalidated.
 
 ## What drains credits
 
@@ -38,7 +40,7 @@ Either missing means the API returns `402 Payment Required`:
 | `BILLING_NOT_SETUP` | No Stripe customer yet — tenant must complete `/api/billing/customer`. |
 | `INSUFFICIENT_CREDITS` | Balance is `≤ $0` — tenant must top up via `/api/billing/purchase`. |
 
-[Test tenants and admins bypass this gate](/docs/pricing-and-revenue/test-mode). For everyone else, the wizard's "Pay" step funds the wallet before the deploy worker is ever called.
+[Test tenants and admins bypass this gate](/docs/pricing-and-revenue/test-mode) (`web/src/app/api/deploy/route.ts` — `if (!tenant.isTest && !adminMode)`). For everyone else, the wizard's "Pay" step funds the wallet before the deploy worker is ever called.
 
 ## Per-call gating (reserve / settle)
 
@@ -52,7 +54,7 @@ For your tool, this means a metered call past zero balance returns `402` from th
 
 ## Suspension on zero
 
-When the balance hits zero and the tenant doesn't have auto-reload armed, the `credit-watchdog` cron (5-minute interval) suspends every running deployment for that tenant. Suspension is a gentle state, not a teardown:
+When the balance hits zero and the tenant doesn't have auto-reload armed, the `credit-watchdog` cron (`*/5 * * * *`, every 5 minutes) suspends every running deployment for that tenant. The same tick also fires auto-reload for armed tenants whose balance dipped below threshold, and re-evaluates already-suspended deployments to resume them when funds reappear. Suspension is a gentle state, not a teardown:
 
 ```
 running → suspending → suspended → resuming → running
@@ -83,10 +85,25 @@ After 90 days suspended, the `suspension-reaper` cron destroys the deployment. T
 
 Tenants top up two ways:
 
-1. **One-off purchase** — they pick an amount in the dashboard, Stripe.js handles the card UI, the `payment_intent.succeeded` webhook posts the credit row and invalidates the balance KV.
-2. **Auto-reload** — opt-in. The tenant arms it with a saved card. When balance drops below `reload_threshold_usd`, the `credit-watchdog` cron creates an off-session Payment Intent. Same webhook lands the credit. A daily spend cap (`reload_cap_usd_per_day`, default `$50`) is the hard ceiling, and a card decline disarms reload so a failed card doesn't repeatedly retry.
+1. **One-off purchase** — they pick an amount in the dashboard, Stripe.js handles the card UI, the `payment_intent.succeeded` webhook posts the credit row and invalidates the balance KV. Stripe's $0.50 floor applies; smaller amounts are rejected before the Payment Intent is created.
+2. **Auto-reload** — opt-in. The tenant arms it with a saved card. When balance drops below `reload_threshold_usd`, the `credit-watchdog` cron creates an off-session Payment Intent. Same webhook lands the credit. Multiple safety gates layer on top, all enforced atomically inside `claim_auto_reload` (`supabase/migrations/094_reload_safety_caps.sql`):
+   - **Cooldown** — 15 minutes between fires per tenant.
+   - **Daily cap** — `stripe_customers.reload_cap_usd_per_day` (default `$50`) is a rolling 24-hour ceiling.
+   - **Orphan-credit gate** — if the previous fire's credit row hasn't landed within 48 hours (webhook outage, Stripe still retrying), further fires are blocked until the credit catches up or someone investigates.
+   - **Decline disarm** — a card decline flips `reload_enabled = false` so a failing card doesn't loop.
+   - **Stripe minimum** — `STRIPE_MIN_USD = 0.5`; an amount below this disarms reload rather than firing.
 
 A "pay-and-deploy" path exists for first-time tenants: after `confirmPayment` succeeds on the client, the wizard calls `POST /api/billing/settle` to fund the wallet synchronously before calling `/api/deploy`, so the deploy gate doesn't race the Stripe webhook.
+
+## Refunds and disputes
+
+The Stripe webhook (`web/src/app/api/webhooks/stripe/route.ts`) handles three reversal events end-to-end:
+
+- **`charge.refunded`** — inserts a negative `credits` row with `source = 'refund'`, idempotent on `refund_<refund.id>`.
+- **`charge.dispute.funds_withdrawn`** — inserts a negative row with `source = 'dispute'`, idempotent on `dispute_<dispute.id>`.
+- **`charge.dispute.created`** — disables auto-reload immediately to avoid stacking charges that might also be disputed.
+
+A Vendo admin can also book a manual refund via `POST /api/admin/refund-credit`, which goes through the `admin_refund_credit` RPC and writes an audited compensating row. Tool authors don't see this surface directly — but if a tenant tells you "I disputed a charge, why is my balance negative?", that's the path.
 
 ## What this means for your tool
 
