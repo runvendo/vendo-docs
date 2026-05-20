@@ -1,0 +1,84 @@
+---
+title: Subdomains
+description: How `{deployment}.{tenant}.vendo.run` resolves, plus custom domain support.
+---
+
+Every Vendo deployment gets a public URL on `*.vendo.run`. The shape and lifecycle of that URL matters more than it looks — it's how routing, TLS, and per-deployment isolation all hang together.
+
+## URL shape
+
+```
+https://{deployment_slug}.{tenant_slug}.vendo.run
+```
+
+- `tenant_slug` — chosen once per tenant (workspace). Stable.
+- `deployment_slug` — chosen at deploy time, defaults to the tool slug (e.g. `twenty`, `hermes`). Editable later.
+
+Both slugs are validated against a reserved list (you can't pick `api`, `proxy`, `vendo`, `www`, etc.) and against the pattern `*-proxy` (which is reserved for Vendo's provider proxies).
+
+## What happens on a request
+
+```
+Browser
+  │  GET https://crm.acme.vendo.run/contacts
+  ▼
+Cloudflare DNS  ─►  *.vendo.run wildcard
+  │
+  ▼
+App-proxy Worker
+  │  reads KV: deploy:crm.acme
+  │  → { target, vendoAuth, tenantId, status }
+  │
+  ▼
+Your backend (Railway / Workers)
+```
+
+The app-proxy is a single Cloudflare Worker (`vendo-app-proxy`) that handles every `*.vendo.run` deployment URL. It looks up routing in KV, enforces auth if you opted in, and reverse-proxies to your real backend.
+
+If the deployment is suspended, resuming, or otherwise not `running`, the proxy serves a status page instead of forwarding. This is why your URL never returns a confusing 404 mid-suspension.
+
+## Renaming a deployment
+
+Tenants can change the `deployment_slug` after deploy. When they do, Vendo atomically:
+
+1. Updates `deployments.deployment_slug` in Postgres.
+2. Swaps the `deploy:{new_subdomain}` KV entry (so the new URL routes immediately).
+3. Deletes the `deploy:{old_subdomain}` entry — old URL 404s instantly. No transparent redirect.
+4. Rewrites `${subdomain}` and `${domain}` env vars in your container.
+5. Triggers a service restart so your app picks up the new env.
+
+If your tool emits absolute URLs (in emails, webhooks, OAuth callbacks), it must read them from env at runtime — not hardcode them. Renaming will move the URL out from under you.
+
+## TLS
+
+You don't manage certs. Two regimes coexist:
+
+- **Two-level URLs** (`crm.acme.vendo.run`) — Cloudflare provisions an Advanced certificate per hostname when the deployment is created. Universal SSL doesn't cover two-level subdomains. Provisioning takes 1–10 minutes during the first deploy.
+- **Single-level URLs** (`acme--crm.vendo.run`) — covered by free Universal SSL on `*.vendo.run`. New deployments increasingly land on this format.
+
+Both serve the same backend; the app-proxy handles them identically.
+
+## Custom domains
+
+For production use, tenants can point their own domain (e.g. `crm.acme.com`) at a deployment. The flow:
+
+1. Tenant adds the domain in the dashboard.
+2. Vendo creates a Cloudflare Worker Custom Domain for that hostname.
+3. Tenant adds a `CNAME` record at their DNS provider pointing to the deployment URL.
+4. Cloudflare auto-provisions TLS once DNS resolves.
+
+Once live, both the `*.vendo.run` URL and the custom domain route to the same backend through the same proxy.
+
+## What your tool sees
+
+In your container's env:
+
+- `${domain}` — the public hostname (with `.vendo.run` or a custom domain).
+- `${subdomain}` — the left-most label.
+
+Always read these at runtime. Don't bake them into a build.
+
+## Related
+
+- [Runtime targets](/docs/infrastructure/runtime-targets) — what's behind the URL.
+- [Secrets and env vars](/docs/infrastructure/secrets-and-env) — the full list of injected variables.

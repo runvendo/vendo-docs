@@ -3,4 +3,25 @@ title: Infrastructure
 description: What runs under your tool — runtime targets, subdomains, the proxy, credentials, logs, healthchecks, and isolation.
 ---
 
-The infrastructure section makes the under-the-hood model navigable: which runtime each tool type targets, how subdomains and custom domains resolve, how the proxy worker meters third-party calls, where logs live and how long they're retained, the healthcheck contract, how secrets and env vars get injected at boot, scaling and resource limits, available regions, and the per-tenant isolation model.
+You don't operate Vendo's infrastructure — Vendo does. But when something breaks at 2am, or when you're deciding whether a feature is feasible, you want a real mental model of what's under your tool.
+
+This section is that model. Each page is written from the perspective of a tool author who needs to debug, configure, or reason about behavior — not from the perspective of someone running the platform.
+
+## What runs where
+
+- [Runtime targets](/docs/infrastructure/runtime-targets) — which compute backend each tool type hits.
+- [Subdomains](/docs/infrastructure/subdomains) — how `*.vendo.run` resolves, custom domains.
+- [Regions](/docs/infrastructure/regions) — where deployments land.
+
+## The request path
+
+- [The proxy](/docs/infrastructure/the-proxy) — what `{provider}-proxy.vendo.run` does to your call.
+- [Credentials worker](/docs/infrastructure/credentials-worker) — how `credentials.vendo.run` vends OAuth tokens.
+- [Healthchecks](/docs/infrastructure/healthchecks) — the contract, and what happens when you fail it.
+
+## Configuration and observability
+
+- [Secrets and env vars](/docs/infrastructure/secrets-and-env) — what gets injected at boot.
+- [Logs and observability](/docs/infrastructure/logs-and-observability) — where to look when something is wrong.
+- [Scaling and limits](/docs/infrastructure/scaling-and-limits) — resource ceilings.
+- [Isolation](/docs/infrastructure/isolation) — what's per-tenant, what's shared.

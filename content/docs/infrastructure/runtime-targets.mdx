@@ -1,0 +1,49 @@
+---
+title: Runtime targets
+description: Which compute backend runs your tool, and why it was picked.
+---
+
+When your tool boots on Vendo, it lands on one of three compute backends. The right one is picked for you based on what kind of tool you're shipping, but understanding the mapping is the difference between "my Postgres connection times out" being a five-minute fix and a five-hour one.
+
+## The three targets
+
+| Backend | Used for | Why |
+|---|---|---|
+| **Railway** | Server-side apps (`tool_type: deployment`) | Long-running processes, native Postgres + Redis, real filesystem, websockets |
+| **Cloudflare Workers** | Static/SSG frontends | Free TLS, instant global edge, zero-cost idle |
+| **Cloudflare Pages** | Static sites that need a CDN with build hooks | Same as Workers, plus Pages-specific tooling |
+
+Tools that need a process to stick around — Twenty CRM, Hermes, Open WebUI, anything with background jobs — go on Railway. Tools that are pure frontends targeting browser users go on Cloudflare. Your template manifest declares `computeProvider` (default `railway`); you don't pick at deploy time.
+
+## What Railway gives you
+
+For `deployment` tools, Vendo provisions a fresh Railway project per deployment. That project contains:
+
+- One or more services from your manifest (your app image, optional sidecars).
+- A managed Postgres database (Neon) if your manifest requests one. The connection URL is injected as `DATABASE_URL`.
+- A managed Redis if your manifest requests one. URL injected as `REDIS_URL`.
+- An R2 bucket if your manifest declares object storage. Credentials injected as `R2_*`.
+- Your services' env vars (system + integration + user) wired in via Railway's variable system.
+
+Your service runs as a normal container. Filesystem is ephemeral (use R2 for persistence), processes can run forever, you have your own loopback network.
+
+## What Cloudflare Workers gives you
+
+For static frontends, Vendo deploys to a Workers script with Static Assets enabled. The Worker serves your built files (`/dist`, `/build`, `/out`) from an edge KV-backed asset store. There's no per-request invocation cost when assets are served — only when your `_worker.js` handles a request.
+
+You don't get a long-running process, a filesystem, or websockets here. If you need those, your tool is misclassified — file a release that flips `computeProvider` to `railway`.
+
+## How the URL resolves
+
+Whichever backend you're on, browsers don't talk to it directly. They hit `{deployment_slug}.{tenant_slug}.vendo.run`, which routes through the app-proxy Worker, which reads `deploy:{subdomain}` from KV and reverse-proxies to your real backend address (a `*.up.railway.app` URL or a `*.workers.dev` URL).
+
+This indirection is why your tool's logs sometimes show requests coming from a Cloudflare IP rather than the end user — they did, and that's by design. If you need the real client IP, read `CF-Connecting-IP` (the app-proxy preserves it).
+
+## Switching backends
+
+You can't switch a deployment between backends in place. The compute provider is baked into the template release. To move from Workers → Railway (or vice versa), you publish a new release with a different `computeProvider` and ask users to upgrade — which redeploys onto the new backend.
+
+## Related
+
+- [Subdomains](/docs/infrastructure/subdomains) — how the URL routes to your backend.
+- [Sandbox](/docs/build-a-tool/sandbox) — local quirks when you're iterating before deploy.

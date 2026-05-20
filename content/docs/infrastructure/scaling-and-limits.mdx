@@ -1,0 +1,80 @@
+---
+title: Scaling and limits
+description: Resource ceilings and scaling behavior for deployment tools.
+---
+
+Vendo's hosting model is **one deployment, one set of resources**. There's no autoscaler dispatching replicas in front of your app; what you provision in the manifest is what you get. This page covers the ceilings you'll hit and what happens when you do.
+
+## Compute (Railway-backed deployments)
+
+Each `deployment` tool runs as one Railway service per role declared in your manifest (typically: the app, optionally a worker, optionally a sidecar). Each service is one container.
+
+| Dimension | Default | Notes |
+|---|---|---|
+| Replicas | 1 | Single instance per service. Suitable for the workload most Vendo tools have today. |
+| CPU | Railway's default per-service allocation | Bursty, shared. Heavy CPU work belongs in a worker process, not the request path. |
+| Memory | Railway's default per-service allocation | OOM = container restart = visible blip to users. |
+| Disk | Ephemeral | Filesystem is wiped on every restart. Persist to R2 / Postgres. |
+
+You don't scale horizontally on Vendo today. If your tool needs that, you're on the wrong platform — file an issue and we'll talk.
+
+## Database (Neon Postgres)
+
+For tools that declared a Postgres database in the manifest, Vendo provisions a Neon branch per deployment.
+
+- **Scaling**: Neon auto-scales compute up and down based on activity. Idle for ~10 minutes → scales to zero compute (the connection pool stays warm). First query after idle adds ~500ms cold-start.
+- **Storage**: Grows as you write. No fixed cap on Vendo Pro; you'll get notified well before any hard limit.
+- **Connections**: Use the pooled URL (`DATABASE_URL`) for everything except migrations and long transactions. Use `DATABASE_URL_UNPOOLED` for those.
+
+## Cache (Redis, when declared)
+
+A Railway Docker Redis instance, single replica, in-memory. Restarts clear the cache. If your tool needs durable Redis, you've outgrown the default — but most tools using Redis purely for cache or rate-limiting are fine.
+
+## Object storage (R2, when declared)
+
+Per-deployment R2 bucket. No quota at the deployment level; the tenant's overall storage usage is metered against credits.
+
+## Request lifetime
+
+| Path | Max wall time |
+|---|---|
+| Through the app-proxy to a Railway backend | ~100 seconds before Cloudflare's edge cuts the request |
+| WebSocket upgrades | Hours; the limit is your backend's, not the proxy's |
+| Provider proxy calls | Bounded by the upstream provider's max (varies; ~10 min for OpenAI streaming) |
+
+If you have a workload that needs to run longer than 100 seconds in response to a single HTTP request, push it to a background job (queue + worker) and return immediately. Long-running synchronous HTTP requests will get killed mid-flight by the edge.
+
+## Credit-based throttling
+
+Vendo doesn't impose request-rate limits on your tool's API calls through the provider proxies. The throttle is **economic**: low balance suspends the deployment.
+
+The `credit-watchdog` worker runs every 5 minutes. It groups deployments by tenant, computes hourly burn from recent credit debits, and:
+
+- **Auto-reloads** the wallet if the tenant has a saved card and `reload_enabled` is on.
+- **Warns** if balance is below a configured threshold but burn is still survivable.
+- **Suspends** if the projected runway is too short and there's no auto-reload available.
+
+Suspended deployments serve a status page (HTTP 503) until balance is restored. Tools below `$0` credits cannot make new metered proxy calls (HTTP 402), regardless of suspension state.
+
+## Long-suspended cleanup
+
+A deployment that stays suspended for 90 days is destroyed. The user gets warning emails at day 83 and day 89. Resuming at any point before day 90 resets the clock.
+
+When destroyed, all of: the Railway project, the Neon branch, the R2 bucket, the KV entry, the Worker Custom Domain, and the database rows for env vars and credentials are removed. Logs persist until Railway's natural retention rolls them off.
+
+## What you can't change
+
+You can't pick:
+
+- The number of replicas (always 1).
+- The container's CPU / memory allocation directly (managed by the manifest's resource declaration, which most tools leave at default).
+- The healthcheck cadence (15 min).
+- The 100s edge request limit.
+
+If any of these are blockers for your tool, the tool likely doesn't belong on the default Vendo runtime — talk to us about alternatives.
+
+## Related
+
+- [Healthchecks](/docs/infrastructure/healthchecks) — what counts as "alive".
+- [The proxy](/docs/infrastructure/the-proxy) — the `402` you'll see when out of credits.
+- [Isolation](/docs/infrastructure/isolation) — how your resources are kept separate from other tenants'.

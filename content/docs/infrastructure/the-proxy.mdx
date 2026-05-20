@@ -1,0 +1,102 @@
+---
+title: The proxy
+description: What `{provider}-proxy.vendo.run` does to your request, what you can observe, and what to expect when it 4xxs.
+---
+
+When your tool calls an LLM, TTS, or transcription provider through Vendo, the request doesn't go to `api.openai.com`. It goes to `openai-proxy.vendo.run` — a Cloudflare Worker that authenticates, meters, and forwards on your behalf. Your tool never sees the real provider API key.
+
+## The path your request takes
+
+```
+Your tool
+  │  POST https://openai-proxy.vendo.run/v1/chat/completions
+  │  Authorization: Bearer vendo_sk_***
+  │
+  ▼
+Proxy Worker
+  │ 1. Resolve adapter from subdomain  (openai-proxy → openai adapter)
+  │ 2. SHA-256 the bearer, look up key:{hash} in KV
+  │ 3. Check balance:{tenantId} in KV
+  │ 4. Resolve binding: app_id + provider → which connection's credentials
+  │
+  ▼
+Upstream provider  (api.openai.com)
+  │  Authorization: Bearer sk-***  (real key, injected by adapter)
+  │
+  ▼
+Response back to your tool
+  │
+  └─► Worker meters tokens, debits credits  (waitUntil; non-blocking)
+```
+
+The whole thing typically adds 10–40ms of overhead per request. Streaming responses pipe straight through.
+
+## The providers
+
+Each provider you call gets its own subdomain:
+
+| Provider | Hostname |
+|---|---|
+| OpenAI | `openai-proxy.vendo.run` |
+| Anthropic | `anthropic-proxy.vendo.run` |
+| OpenRouter | `openrouter-proxy.vendo.run` |
+| Gemini | `gemini-proxy.vendo.run` |
+| ElevenLabs | `elevenlabs-proxy.vendo.run` |
+| AssemblyAI | `assemblyai-proxy.vendo.run` |
+| MuAPI | `muapi-proxy.vendo.run` |
+| Telegram | `telegram-proxy.vendo.run` |
+
+The path you send (`/v1/chat/completions`, `/v1/messages`, etc.) matches the upstream provider's path — the SDKs you already use work without modification once you swap the base URL.
+
+## Status codes you'll see
+
+The proxy returns provider responses passthrough on success. It also returns its own status codes when *it* rejects the request:
+
+| Status | Meaning | What to check |
+|---|---|---|
+| `401` | Missing or invalid bearer | Is your `VENDO_API_KEY` set and not revoked? |
+| `402` | Insufficient credits | Your tenant's balance is at or below zero. Top up. |
+| `403` | No active binding for this provider | The user hasn't connected the provider, or the connection was revoked. |
+| `404` | Unknown adapter | You hit a subdomain Vendo doesn't proxy. |
+| `503` | Vendo Postgres unreachable | Transient. Retry. |
+
+Any `4xx` or `5xx` from the upstream is passed back to you unchanged, with the same status code and body the provider would have returned.
+
+## Free vs metered routes
+
+Not every call costs credits. Each provider's adapter classifies routes:
+
+- **Metered** — completions, embeddings, audio synthesis, transcription. Reserves a hold against your balance, settles after the response.
+- **Free** — metadata endpoints (e.g. `GET /v1/models`, OpenRouter's catalog). Zero credits, no balance check. A tenant with `$0` balance can still list models.
+- **Blocked** — a small allowlist; provider routes Vendo explicitly refuses to forward.
+
+You don't have to track which is which. The proxy decides at dispatch time.
+
+## What gets metered, and how
+
+For text generation: usage is extracted from the response (tokens in/out) and priced from Vendo's `rates` table, which mirrors provider pricing plus a per-meter margin. For TTS: per-character. For transcription: per audio-hour.
+
+Billing runs *after* the response is sent (Cloudflare's `waitUntil`). If billing fails, your call still succeeded. The catch: balance updates can lag by a few seconds — don't poll balance immediately after a call expecting an instant decrement.
+
+For streaming responses (`stream: true`), the proxy reads usage from the final SSE chunk. OpenRouter's proxy auto-injects `stream_options: { include_usage: true }` so the chunk is present.
+
+## What you can observe
+
+- **Your tool's logs** — the request, status code, latency. Same as calling the provider directly.
+- **`GET /api/v1/balance`** — current credit balance, with up to ~60s of KV cache lag.
+- **`GET /api/v1/usage`** — recent `usage_events` rows for your tenant.
+- **Dashboard → Billing** — historical usage by provider.
+
+You **cannot** see the real provider API key, the upstream rate limit headers (proxy doesn't relay all of them), or another tenant's calls.
+
+## Gotchas
+
+- **Don't hard-code base URLs.** Read the URL from the env var Vendo injects (e.g. `OPENROUTER_BASE_URL`, `OPENAI_BASE_URL`). If you bake it in, you can't run the same code locally against the upstream provider.
+- **`X-Vendo-Connection` for disambiguation.** If a tenant has two connections to the same provider (rare, but possible), pass `X-Vendo-Connection: <connection_id>` to pick one. Otherwise the proxy picks the oldest binding.
+- **Holds can leave a 60s shadow.** If your tool retries fast on a transient error before the hold settles, you may briefly see a smaller available balance than expected.
+- **Telegram is forwarded, not metered.** Telegram bot calls go through `telegram-proxy.vendo.run` but Vendo doesn't bill them.
+
+## Related
+
+- [Credentials worker](/docs/infrastructure/credentials-worker) — where OAuth tokens come from.
+- [Secrets and env vars](/docs/infrastructure/secrets-and-env) — env vars your tool reads.
