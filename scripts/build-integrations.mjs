@@ -321,15 +321,23 @@ function quickstartFor(defaultProfile, slug, providerName, tokenComment) {
   return tokenQuickstart(slug, tokenComment);
 }
 
-// Render the "Reading the credential at runtime" section that explains the
-// env var is already present in os.environ, and that `vendo.token(slug)` is
-// the resolution-chain-aware alternative (also works in OSS mode).
+// Render the "Reading the credential at runtime" section.
 //
-// We pick the first non-BASE_URL env var as the "primary" — for token-based
-// providers that's the API key / access token / bot token. For composio,
-// we keep the same shape but lead with `vendo.data.execute` since that's
-// the canonical path; the env var is the escape hatch for raw API access.
-function runtimeAccessSection(envBootstrap, providerName, composio) {
+// IMPORTANT — there are two different access paths depending on auth profile:
+//
+//   - Token-based profiles (vendo_managed_pool, byok_static, oauth_app_install,
+//     oauth2): Vendo writes the env var into the deployment's environment at
+//     boot via `deployment_env_vars` (kind='integration'). The upstream SDK
+//     auto-discovers it. `vendo.token(slug)` reads the same value with
+//     resolution-chain semantics (works in OSS mode too).
+//
+//   - composio_managed: Composio holds the upstream credential — Vendo never
+//     gets a long-lived copy. The env_bootstrap row declares the SDK's
+//     credential-projection shape, NOT a Railway env var. `process.env.X` is
+//     undefined in the running container. To read the credential, call
+//     `vendo.token(slug)` (live fetch from credentials.vendo.run) or the
+//     canonical `vendo.data.execute(ACTION, args)`.
+function runtimeAccessSection(envBootstrap, providerName, composio, slug) {
   const vars = envBootstrap && Array.isArray(envBootstrap.vars) ? envBootstrap.vars : [];
   const primary = vars.find((v) => !(typeof v.name === "string" && v.name.endsWith("_BASE_URL")));
   if (!primary) return "";
@@ -337,7 +345,9 @@ function runtimeAccessSection(envBootstrap, providerName, composio) {
   if (composio) {
     return `## Reading the credential at runtime
 
-The env var above is set in your deployment's environment at boot — \`process.env.${varName}\` (TypeScript) / \`os.environ["${varName}"]\` (Python) returns the tenant's Composio-issued access token, in case you need raw API access. For the canonical path (metering, connected-account resolution, error normalization) use [\`vendo.data.execute\`](/docs/guides/recipes/call-composio-action) instead.
+${providerName} is composio-managed, so Vendo never holds a long-lived copy of the upstream credential — Composio does. That means \`process.env.${varName}\` is **not** populated in your running container; the env-var row above describes the SDK's credential-projection shape, not a Railway env var.
+
+To read the credential from your tool, call \`vendo.token("${slug}")\` (the SDK fetches a live access token from Composio at call time) or use the canonical [\`vendo.data.execute\`](/docs/guides/recipes/call-composio-action) path, which handles metering, connected-account resolution, and error normalization for you.
 `;
   }
   return `## Reading the credential at runtime
@@ -414,7 +424,7 @@ These are the env vars Vendo injects into your deployment at boot when this inte
 
 ${envVarsSection(envBootstrap)}
 
-${runtimeAccessSection(envBootstrap, catalog.name, composio)}
+${runtimeAccessSection(envBootstrap, catalog.name, composio, slug)}
 ${callShapeBlock}
 ## Quickstart
 
@@ -504,7 +514,7 @@ These are the env vars Vendo injects into your deployment at boot when this inte
 
 ${envVarsSection(row.env_bootstrap)}
 
-${runtimeAccessSection(row.env_bootstrap, row.name, composio)}
+${runtimeAccessSection(row.env_bootstrap, row.name, composio, slug)}
 ${composio
   ? `## Through Composio\n\nCalls to ${row.name} are brokered through Vendo's Composio bridge. Your tool issues a \`vendo.data.execute(ACTION, args)\` call; Vendo resolves the tenant's connected ${row.name} account, forwards to Composio, meters one \`composio.action_call\` unit, and returns the result. Your code never sees the upstream credential.\n\nSee [Call a Composio Action](/docs/guides/recipes/call-composio-action) for the full pattern, including \`NotConnected\` handling.\n`
   : `## Direct API\n\n${row.name} is called directly (no Vendo proxy intermediary). The SDK reads the injected credential from the environment and talks to ${row.name}'s API host.\n`
