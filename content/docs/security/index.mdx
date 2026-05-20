@@ -1,6 +1,14 @@
 ---
 title: Security
-description: Tenant isolation, secret handling, OAuth flow security, proxy authentication, compliance posture, and vulnerability reporting.
+description: Tenant isolation, secret handling, OAuth flow security, proxy authentication, and vulnerability reporting.
 ---
 
-How Vendo isolates tenants from each other, how secrets and OAuth tokens are stored and rotated, the authentication contract for the credentials and integration proxies, the current compliance posture (SOC2, GDPR, data residency), and the process for reporting security vulnerabilities responsibly.
+How Vendo isolates tenants from each other, how secrets and OAuth tokens are stored and rotated, the authentication contract for the credentials and integration proxies, and the process for reporting security vulnerabilities responsibly.
+
+These pages describe what the platform does today. Where a guarantee depends on an upstream provider (e.g. Composio token storage), that's called out on the page in question.
+
+- [Tenant isolation](/docs/security/tenant-isolation) — where the boundaries between one tenant and another are enforced.
+- [Secret handling](/docs/security/secret-handling) — the three classes of secret Vendo deals with, and how each is stored.
+- [OAuth flow security](/docs/security/oauth-flow-security) — the OAuth dance, token rotation, and what happens on revocation.
+- [Proxy authentication](/docs/security/proxy-authentication) — the `vendo_sk_*` bearer model, key scopes, rotation.
+- [Reporting vulnerabilities](/docs/security/reporting-vulnerabilities) — how to disclose responsibly.

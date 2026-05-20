@@ -1,4 +1,11 @@
 {
   "title": "Security",
-  "pages": ["index"]
+  "pages": [
+    "index",
+    "tenant-isolation",
+    "secret-handling",
+    "oauth-flow-security",
+    "proxy-authentication",
+    "reporting-vulnerabilities"
+  ]
 }

@@ -1,0 +1,59 @@
+---
+title: Reporting vulnerabilities
+description: How to report a security issue in Vendo, what to include, and what to expect in response.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+If you believe you've found a security vulnerability in Vendo's platform — the dashboard, the proxies, the deploy worker, the credentials worker, the SDKs, or anything Vendo itself runs — please report it privately rather than opening a public issue.
+
+## Contact
+
+**security@vendo.run**
+
+PGP is not currently published. If you need to encrypt the report, contact the address above and we'll arrange a key out of band.
+
+## What to include
+
+A useful report contains:
+
+- A clear description of the issue and why you believe it's a vulnerability.
+- The Vendo surface affected: a URL, an API endpoint, an SDK function, or a deployed tool's behaviour. If the surface is a specific deployment, include the deployment hostname.
+- Steps to reproduce — the smallest sequence that demonstrates the issue. If exploitation requires specific account state (e.g. a particular connection bound), describe it.
+- The impact you believe an attacker could achieve.
+- Anything you already tried that did *not* work — it saves us repeating the same checks.
+
+If you have a proof-of-concept, attach or link it. We will not penalise a reporter for clearly-bounded, non-destructive PoCs that stay within their own tenant.
+
+## What's in scope
+
+In scope for a vulnerability report:
+
+- The Vendo dashboard at `vendo.run` and the docs at `docs.vendo.run`.
+- The integration proxies at `*-proxy.vendo.run` and the credentials worker at `credentials.vendo.run`.
+- The app proxy that fronts deployments at `*.vendo.run`.
+- The deploy and hooks workers.
+- The published Vendo SDKs (Python, TypeScript, Swift) and the public `/api/v1/*` endpoints.
+
+## What's out of scope
+
+The following are not Vendo platform vulnerabilities, even when reachable through a Vendo deployment:
+
+- Bugs in the upstream open-source tool itself (e.g. an XSS in Open WebUI, an auth issue in a third-party CRM). Report these to the upstream project. Vendo will track and ship patched versions, but the bug is theirs.
+- Issues that require a tenant's own credentials, dashboard access, or installed extensions to exploit against the same tenant's own deployment — these are within the tenant's trust boundary by design.
+- Generic findings from automated scanners against the marketing site (missing security headers on static pages, fingerprintable software versions) where no concrete impact is described.
+- Denial-of-service attacks. Please don't run them against production. If you've identified an amplification vector, describe it; don't demonstrate it.
+- Social engineering of Vendo employees or tenants.
+
+## What to expect
+
+- An acknowledgement that the report has been received, typically within 2 business days.
+- An assessment of severity and reproducibility. We will tell you whether we consider the report a vulnerability and at what severity.
+- A patch timeline. Critical issues are patched as fast as we can ship; lower-severity ones are scheduled alongside the rest of the work.
+- Coordination on public disclosure. We ask that you not publicly disclose the issue until a fix has shipped to production. We will credit reporters who want to be named once the fix is live.
+
+Vendo does not currently run a paid bug-bounty program. We do appreciate reports and will say so publicly when a fix lands.
+
+<Callout type="info">
+  If you're seeing a security-relevant issue in a deployment that you control — for example, a setting in the upstream tool that exposes data more broadly than you wanted — that's a configuration question, not a vulnerability. Reach out via the regular support channel and we'll help you tune it.
+</Callout>

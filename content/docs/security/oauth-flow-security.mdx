@@ -1,0 +1,64 @@
+---
+title: OAuth flow security
+description: How the OAuth dance is brokered, where tokens live, how refresh works, and what happens when a user revokes.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+For providers that authenticate via OAuth — Notion, Google Drive, the Composio-managed catalog — Vendo brokers the authorization flow on the tenant's behalf and stores the resulting credential so your tool can use it via the proxy or the credentials worker. This page covers the boundaries of that flow.
+
+## The flow
+
+A tenant initiates an OAuth connection from the dashboard. The dashboard opens a popup to one of two paths:
+
+- **First-party providers** (e.g. Notion): the popup goes to `vendo.run/api/oauth/<provider>/authorize`, which builds the upstream authorize URL with Vendo's client id, a one-time `state`, and the callback URL `vendo.run/api/oauth/<provider>/callback`. The user signs in at the provider; the provider redirects back to Vendo's callback with a `code`; Vendo exchanges the code for tokens server-side and writes a `connections` row.
+- **Composio-managed providers**: the popup goes to `vendo.run/api/oauth/composio/<provider>/start`, which calls Composio's `connectedAccounts.initiate()` and redirects to Composio's hosted OAuth page. On return, Composio holds the credential; Vendo writes a `connections` row with the Composio account id but no encrypted credential of its own.
+
+In both cases, **the popup runs in `vendo.run`'s origin, not in your deployment's origin.** Your tool never sees the OAuth `code`, the `state`, or the redirect URL — it can't be tricked into intercepting them by, say, opening a same-origin frame, because the dashboard is on a different domain.
+
+## Callback URL handling
+
+Authorize URLs only accept callback URLs under `vendo.run`. The OAuth client registrations at each provider list a fixed set of `vendo.run/api/oauth/<provider>/callback` entries; the provider rejects anything else. There is no path by which a tenant or a deployment can register a callback that points at attacker-controlled infrastructure.
+
+For Vendo's own session minting (proxy session JWTs, used when a tenant opens an iframe-embedded preview), the redirect parameter is allow-listed: only `https://*.vendo.run` destinations are accepted. Open-redirect attempts return an error before any token is issued.
+
+## Token storage and decryption
+
+For first-party OAuth (`oauth_app_install` profile), the access token and refresh token are stored in `connections.encrypted_credential` / `encrypted_refresh_token` columns, AES-256-GCM encrypted at rest. Decryption happens in the credentials worker at the moment a request needs the cleartext — the worker decrypts in memory, returns a short-lived response to the calling SDK, and does not persist the cleartext anywhere.
+
+For Composio-managed providers, Vendo holds no token. The credentials worker calls Composio's REST API with Composio's account id, receives a freshly refreshed access token, and caches it per Cloudflare colo until ~60 seconds before expiry. The refresh token never reaches Vendo.
+
+## Token rotation and refresh
+
+The credentials worker handles refresh transparently:
+
+- It returns a token that's at least 60 seconds away from expiry. If the cached token is within that window, it triggers a refresh against the upstream provider and serves the new one.
+- For Composio-managed connections, Composio holds the refresh token and runs the rotation; Vendo asks for a fresh access token whenever it needs one.
+- For `oauth_app_install` connections, Vendo holds both tokens, calls the provider's refresh endpoint, and re-encrypts the new access (and where applicable, new refresh) token before serving the response.
+
+Your tool calls `vendo.token("notion")` (or hits `credentials.vendo.run/<provider>` with its `vendo_sk_*` bearer) and receives `{ access_token, expires_at }`. You do not implement refresh, and you should not cache the access token longer than `expires_at`.
+
+## What happens on revocation
+
+A tenant revokes a connection from the dashboard (`DELETE /api/connections/[id]`). In order:
+
+1. **Upstream revocation** is attempted best-effort. For Composio-managed connections, Vendo calls Composio's revoke endpoint. For first-party Notion, Vendo calls Notion's token revocation endpoint. Failure here does not block the rest of the steps — the connection is still removed from Vendo's side.
+2. **Bindings are deleted.** Every `app_connection_bindings` row referencing the connection is dropped. From this moment, any proxy call from a deployment that was using this connection returns `binding_missing` (HTTP 403).
+3. **The connection row is marked `revoked`** and the encrypted credential columns are cleared.
+4. **The proxy KV cache is invalidated.** Cached connection lookups have a 60-second TTL, so any worker that had the old value will refresh within the window. Bindings are not cached on the proxy hot path, so the 403 from step 2 takes effect on the next request.
+
+After revocation, a deployment that tries to use the now-revoked integration receives a clear 403, not a stale credential. There is no path by which the deployment continues to consume the connection.
+
+## Connections that need re-authentication
+
+If a provider expires a token and Vendo's refresh attempt fails (refresh token revoked upstream, scope changed, provider outage), the connection transitions to `needs_reauth`. Proxy calls then return 401 with that status. The dashboard surfaces a "Reconnect" prompt for the tenant. The deployment's tool code does not have to implement any recovery — it sees 401s until the tenant reconnects, at which point traffic resumes without redeploying.
+
+## What your tool can and cannot do
+
+- It **can** request a fresh token via the SDK or the credentials worker and use it to call the upstream provider for the duration of the token's validity.
+- It **can** observe the `connection_status` field returned with bindings (e.g. via `vendo.workspace.activeBindings()`) and degrade gracefully when a binding is `needs_reauth` or `revoked`.
+- It **cannot** read the refresh token. It **cannot** trigger an OAuth flow from inside the deployment — only the dashboard can initiate one. It **cannot** rebind a connection it doesn't own.
+
+<Callout type="info">
+  If your tool needs a scope you can't request via the dashboard's existing OAuth client, the provider has to be added at the platform level — opening it up to all tenants. That's a Vendo-side change, not a tenant-side one.
+</Callout>

@@ -1,0 +1,56 @@
+---
+title: Tenant isolation
+description: How Vendo separates one tenant's data and compute from another — at the database, at the deployment, at the proxy.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Every running instance of your tool is owned by exactly one tenant. Vendo's job is to keep that tenant's data, credentials, and traffic from leaking into another tenant's instance — even when both instances run the same tool image.
+
+This page covers where the isolation boundaries are.
+
+## One deployment, one Railway project
+
+When a tenant deploys a server-side tool, Vendo provisions a fresh Railway project for that deployment. The project owns:
+
+- The tool's services (web, workers, anything declared in the manifest).
+- A managed Postgres database (Neon) on its own branch.
+- A managed Redis (if the manifest requests one), running as a Railway Docker service inside the project.
+- An R2 bucket scoped to the deployment id (if the manifest requests one).
+
+Two deployments — same tenant, same tool, or different tenants entirely — never share any of these. There is no shared database the tool can reach into, no shared Redis, no shared object storage. A tenant that deploys "CRM" twice gets two independent projects with two independent databases.
+
+This is the strongest boundary Vendo offers, and it's the default for `computeProvider: railway` tools. Static and edge tools (`cloudflare-workers`, `cloudflare-pages`) don't have a Railway project per deployment, but they also don't have writable shared state — they're stateless by construction.
+
+## Per-deployment hostname and TLS
+
+Each deployment gets its own hostname under `{deployment_slug}.{tenant_slug}.vendo.run`, served by a Cloudflare Worker Custom Domain with a per-hostname TLS certificate auto-provisioned by Cloudflare. The reverse proxy reads its routing target from a per-subdomain entry — there's no shared upstream pool that a tenant could accidentally land in.
+
+Renaming a deployment swaps the routing entry atomically. The old hostname 404s immediately rather than serving the previous tenant's traffic.
+
+## Per-tenant connections, enforced in the database
+
+A connection (the credential record for an external provider like Telegram or Notion) is owned by exactly one tenant. The relationship between a deployment and a connection is the `app_connection_bindings` row, and the database carries a trigger that rejects any binding insert where the connection's `tenant_id` doesn't match the deployment's `tenant_id`. Cross-tenant bindings cannot exist — not because the API blocks them, but because the database refuses them.
+
+The proxy enforces the same boundary on every call: when your tool calls `openai-proxy.vendo.run`, the proxy resolves your key to a tenant, then to your deployment's bindings. There's no code path that lets a deployment from tenant A reach a connection owned by tenant B, even if it forged the right binding ids — the database lookup is keyed on the tenant the proxy already resolved.
+
+## Identity headers come from the proxy, not the tool
+
+When a user's browser hits your deployment, the proxy injects identity headers (`X-Vendo-User-Id`, `X-Vendo-User-Email`, `X-Vendo-Tenant-Id`, etc.) derived from a signed session. **Inbound `X-Vendo-*` headers from the user are stripped before injection.** A user cannot impersonate another user or another tenant by sending a header — the proxy deletes the inbound value first, then writes the verified one.
+
+Your tool can therefore treat these headers as trusted *as long as the request actually came through the proxy*. A direct request to the Railway compute backend would not carry verified identity headers, which is why Railway's backend hostnames are not customer-facing.
+
+## Per-tenant credit balance and metering
+
+Credit balance is keyed on `tenant_id`. The proxy reserves credits against the resolved tenant before forwarding to an upstream provider; settlement debits the same tenant. There is no shared credit pool across tenants and no path by which one tenant's usage decrements another's balance.
+
+## What is shared
+
+Two things are shared across tenants, and both are read-only or hardened against tenant-attributable mutation:
+
+- **Provider rate tables.** OpenRouter, OpenAI, etc. model pricing is one global table the proxy reads. Tenants can't write to it; a cron job refreshes it from upstream sources.
+- **The Cloudflare Workers themselves.** The proxy, app proxy, and credentials worker run as global Cloudflare scripts. Each request is processed in isolation; per-request state (KV reads, balance reservations, identity resolution) is fully scoped to the resolved tenant.
+
+<Callout type="info">
+  Isolation describes what Vendo enforces between tenants. It does *not* cover what your tool does with the data inside one tenant's deployment — that's your code, your database, your responsibility. If your tool stores user data in its Neon database, it's stored in the tenant's database alone, but how you partition that data by end-user is up to you.
+</Callout>
