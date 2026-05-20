@@ -1,0 +1,43 @@
+---
+title: SDK reference
+description: Class, method, and type reference for the official Vendo SDKs (Python, TypeScript, Swift).
+---
+
+import { Cards, Card } from "fumadocs-ui/components/card";
+
+Vendo ships first-party SDKs in three languages. They share the same surface model (instance client with `connections`, `integrations`, `billing`, `webhooks`, `events`, `data` sub-APIs) but follow each language's idioms (sync + async in Python, `Promise`-returning in TS, `actor`-based in Swift).
+
+Pick the language for your tool and jump to the deep reference:
+
+<Cards>
+  <Card title="Python — vendo" href="/docs/reference/sdk/python">
+    `pip install vendo-sdk`. Sync `Vendo` and async `AsyncVendo` clients; sub-APIs under `vendo.aio`. Requires Python 3.11+.
+  </Card>
+  <Card title="TypeScript — @vendodev/sdk" href="/docs/reference/sdk/typescript">
+    `npm install @vendodev/sdk`. Node + browser builds; reconciler available at `@vendodev/sdk/reconciler` subpath.
+  </Card>
+  <Card title="Swift — vendo-sdk-swift" href="/docs/reference/sdk/swift">
+    SwiftPM. `Vendo` is an `actor`; supports iOS 15+, macOS 12+, tvOS 15+, watchOS 8+.
+  </Card>
+</Cards>
+
+## Common surface
+
+Every SDK exposes the same six sub-APIs on the client instance:
+
+- `connections` — list, get, get connection URLs for the dashboard
+- `integrations` — catalog metadata, env-var inventory
+- `billing` — balance, spend caps, usage rollups
+- `webhooks` — verify inbound webhook signatures
+- `events` — subscribe to the SSE stream of `connection.*` and `billing.*` events
+- `data` — `data.execute(action, args)` for Composio-managed integrations
+
+Errors share the same code names across languages — see [Errors](/docs/concepts/errors) for the `Vendo-Error-Code` table.
+
+## Two modes
+
+All three SDKs run in two modes — see [Two modes](/docs/concepts/two-modes) for the resolution chain. In short: with `VENDO_API_KEY` set, the SDK goes through Vendo's proxy + credential store; without it, the SDK falls back to BYOK env vars and direct provider calls.
+
+## Versioning
+
+Each SDK ships an independent semver. The Python and TypeScript packages keep their `CHANGELOG.md` in their respective repos; the Swift package's release notes live in its `CHANGELOG.md` too. See the [Changelog](/docs/changelog) page for the consolidated rollup.
