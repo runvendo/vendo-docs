@@ -1,0 +1,4 @@
+{
+  "title": "vendo.yaml",
+  "pages": ["index", "integrations", "wizard-inputs", "env-and-secrets", "healthchecks"]
+}

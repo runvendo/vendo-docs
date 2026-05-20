@@ -1,0 +1,76 @@
+---
+title: Integrations
+description: Declare the providers your tool calls so Vendo can bind tenant connections and inject the right env vars at boot.
+---
+
+`integrations:` lists every provider your tool talks to. Each entry tells the platform two things: "this tool calls provider X" and "X is required / optional". When a tenant deploys your tool, Vendo binds a connection for each integration, resolves the provider-specific env vars, and writes them into the deployment's environment so your code can read `process.env.OPENROUTER_API_KEY` (and friends) at runtime.
+
+The field is required. If your tool calls no third-party providers, set it to an empty array:
+
+```yaml
+integrations: []
+```
+
+## Shape
+
+Each entry is `{ provider, optional? }`:
+
+```yaml
+integrations:
+  - provider: openrouter
+  - provider: telegram
+    optional: true
+  - provider: stripe
+```
+
+- **`provider`** — the integration slug from Vendo's catalog (`openrouter`, `telegram`, `stripe`, `notion`, `googledrive`, etc.). Slugs are the canonical ID used in the proxy subdomain, the connections table, and the env var registry.
+- **`optional`** — when `true`, the deploy wizard lets the tenant skip binding a connection. Your code must handle the env var being absent. When `false` (the default), the deploy worker blocks the deploy until a connection is bound.
+
+That's the whole schema. Per-provider details — what env vars get injected, what the proxy URL is, what auth modes are supported — live with the provider, not in your manifest.
+
+## What gets injected at runtime
+
+Each provider declares its own env var set in Vendo's integrations registry. For example, declaring `telegram` causes the deploy worker to inject `TELEGRAM_BOT_TOKEN` (the tenant's connection secret) and, where relevant, `TELEGRAM_WEBHOOK_URL`. Declaring `openrouter` injects `OPENROUTER_API_KEY` (a `vendo_sk_*` proxy key, not a raw OpenRouter key) and `OPENROUTER_BASE_URL` (the Vendo proxy endpoint).
+
+Your tool reads these like ordinary env vars:
+
+```python
+import os
+import openai
+
+client = openai.OpenAI(
+    api_key=os.environ["OPENROUTER_API_KEY"],
+    base_url=os.environ["OPENROUTER_BASE_URL"],
+)
+```
+
+You don't list the env vars in `vendo.yaml`. The platform owns the provider→env-var mapping centrally so that every tool gets the same names and a provider can add or rename an env var without every tool rewriting its manifest.
+
+The full list of env vars each provider exposes lives on that provider's page in [Integrations](/docs/integrations).
+
+## Required vs optional
+
+Required (`optional: false`, the default) integrations gate the deploy. The wizard won't let the tenant continue until they've either picked an existing connection or made a new one. The bound connection's env vars are guaranteed to be set when your container boots.
+
+Optional integrations are exactly that — the wizard offers them but lets the tenant skip. Your code must defend against the env var being missing:
+
+```typescript
+const stripeKey = process.env.STRIPE_SECRET_KEY;
+if (!stripeKey) {
+  console.warn("Stripe not configured — checkout disabled");
+}
+```
+
+A good rule of thumb: required = the tool literally cannot start without it (e.g. the LLM provider for an AI tool). Optional = a feature degrades gracefully if missing (e.g. Stripe checkout for a tool that also supports manual invoicing).
+
+## Webhooks and inbound calls
+
+If your tool needs to receive inbound calls from a provider (e.g. Telegram updates, Stripe events), declaring the integration is enough — Vendo's hooks worker routes `https://hooks.vendo.run/{connection-id}` to your deployment automatically. You don't list webhook paths in `vendo.yaml`. The mechanism, and how to verify inbound requests, is covered in the SDK's webhook docs.
+
+## Restart behavior
+
+When a tenant rebinds a connection — say, swapping their Telegram bot token — the deploy worker updates `deployment_env_vars` and restarts your container so it picks up the new value. There's nothing to declare in the manifest; the restart-on-rebind behavior is automatic for every integration entry.
+
+## Adding a provider that isn't in the catalog
+
+You can't. Providers are defined centrally in Vendo's integrations registry; arbitrary OAuth or API integrations aren't accepted on a per-tool basis. If you need a provider that doesn't exist yet, [open an issue](https://github.com/runvendo/vendo/issues/new) describing the auth model and what env vars the tool needs at runtime. Most providers can be added in a day.
