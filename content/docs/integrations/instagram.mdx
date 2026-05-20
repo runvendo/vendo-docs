@@ -32,7 +32,9 @@ These are the env vars Vendo injects into your deployment at boot when this inte
 
 ## Reading the credential at runtime
 
-The env var above is set in your deployment's environment at boot — `process.env.INSTAGRAM_ACCESS_TOKEN` (TypeScript) / `os.environ["INSTAGRAM_ACCESS_TOKEN"]` (Python) returns the tenant's Composio-issued access token, in case you need raw API access. For the canonical path (metering, connected-account resolution, error normalization) use [`vendo.data.execute`](/docs/guides/recipes/call-composio-action) instead.
+Instagram is composio-managed, so Vendo never holds a long-lived copy of the upstream credential — Composio does. That means `process.env.INSTAGRAM_ACCESS_TOKEN` is **not** populated in your running container; the env-var row above describes the SDK's credential-projection shape, not a Railway env var.
+
+To read the credential from your tool, call `vendo.token("instagram")` (the SDK fetches a live access token from Composio at call time) or use the canonical [`vendo.data.execute`](/docs/guides/recipes/call-composio-action) path, which handles metering, connected-account resolution, and error normalization for you.
 
 ## Through Composio
 
