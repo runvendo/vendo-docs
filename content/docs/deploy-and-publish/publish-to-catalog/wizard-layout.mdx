@@ -1,0 +1,86 @@
+---
+title: Wizard layout
+description: Design the configure-step UX tenants see when they deploy your tool.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+When a tenant clicks **Deploy** on your catalog listing, they go through a wizard: account, configure, optionally pay, launch. The **configure** step is yours to design. The `wizardLayout` field in the manifest controls how it's split into groups, how integrations are presented, and where each `userInputs[]` entry lands.
+
+## When you need it
+
+If `wizardLayout` is omitted (or `null`), the wizard renders a single page with every `userInputs[]` entry and every required integration stacked vertically. Fine for tools with 2–3 inputs. Painful at 10+.
+
+Define `wizardLayout` when:
+
+- You have more than ~5 user inputs.
+- Some inputs are advanced and you want them in a separate step.
+- You want a specific ordering for required integrations vs user inputs.
+- You want a step dedicated to "connect provider X" before another step dedicated to "configure provider Y."
+
+## Shape
+
+```jsonc
+"wizardLayout": {
+  "groups": [
+    {
+      "title": "Connect integrations",
+      "description": "Bind the providers this tool needs.",
+      "items": [
+        { "type": "integration", "provider": "openrouter" },
+        { "type": "integration", "provider": "telegram" }
+      ]
+    },
+    {
+      "title": "Basic settings",
+      "items": [
+        { "type": "input", "key": "BOT_NAME" },
+        { "type": "input", "key": "DEFAULT_LOCALE" }
+      ]
+    },
+    {
+      "title": "Advanced",
+      "description": "Optional — defaults work for most cases.",
+      "items": [
+        { "type": "input", "key": "RATE_LIMIT_RPM" },
+        { "type": "input", "*": true }
+      ]
+    }
+  ]
+}
+```
+
+Each `groups[]` entry becomes a step. Each `items[]` entry is either an `integration` (resolved by `provider` slug) or an `input` (resolved by `userInputs[]` `key`).
+
+## Resolution rules
+
+- **First occurrence wins.** If you list the same integration or input key in two groups, only the first occurrence renders.
+- **`["*"]` sweeps the remainder.** `{ "type": "input", "*": true }` catches every `userInputs[]` key not explicitly placed earlier. Use it in your "Advanced" or final group.
+- **Anything not in `wizardLayout` is not rendered.** Forgetting to add a key (and no `["*"]` sweep) silently drops it from the wizard. The deploy worker still injects the default if you set one in `userInputs[]`, but the tenant has no way to override.
+- **Required integrations always block submission**, regardless of which group they appear in. `optional: true` integrations can be skipped.
+
+<Callout type="warn">
+The first-occurrence rule is fail-quiet. Always add a `["*"]` input sweep in your last group so a forgotten key still appears in the wizard.
+</Callout>
+
+## Designing the steps
+
+Three patterns that work:
+
+**Pattern 1 — providers first, then config.** Most common shape. Tenants connect every integration in step 1, then configure your tool's behavior in step 2.
+
+**Pattern 2 — single Configure step.** Skip `wizardLayout`. Right for tools with 1–3 inputs and zero or one integration.
+
+**Pattern 3 — providers, basics, advanced.** Three steps. Use this when you have optional inputs with sane defaults that you want hidden behind an "Advanced" expansion.
+
+Keep group titles imperative ("Connect Telegram", "Configure the bot"), not descriptive. Tenants are doing each step, not reading about it.
+
+## Where it ends up
+
+`wizardLayout` is written to `tool_releases.wizard_layout` by the vendo-templates sync action. The Configure step UI in [`web/src/components/onboarding/`](https://github.com/runvendo/vendo/tree/main/web/src/components/onboarding) reads from there. The resolver lives in [`web/src/lib/wizard-layout-resolver.ts`](https://github.com/runvendo/vendo/blob/main/web/src/lib/wizard-layout-resolver.ts) and is the authoritative spec when shape questions come up.
+
+## Iterating
+
+Wizard layout is part of the manifest, so changes ship as new versions. You don't need a code release to re-order the wizard — just a new `{slug}/{version}.json` and a release migration. Existing tenants keep the layout they deployed against; new deploys use the active release's layout.
+
+Next: [Submission](/docs/deploy-and-publish/publish-to-catalog/submission) — opening the PR.

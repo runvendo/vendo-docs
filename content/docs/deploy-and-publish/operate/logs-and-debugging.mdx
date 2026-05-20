@@ -1,0 +1,81 @@
+---
+title: Logs and debugging
+description: Where to find logs for a deployed tool, what each log surface tells you, and a basic debug flow.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+A Vendo deployment writes to three distinct log surfaces. Each captures a different layer of the request flow. Knowing which to read first is most of debugging.
+
+## The three log surfaces
+
+| Surface | What it logs | Where it lives | Use it for |
+|---|---|---|---|
+| **`deploy_logs`** (Supabase) | Every step of the deploy worker workflow with structured metadata | Postgres in the Vendo control plane | Failed deploys, retries, upgrade workflows, suspend/resume transitions |
+| **Compute logs** (Railway / Cloudflare) | Your container's stdout/stderr | Provider platform, surfaced via dashboard | Application errors, request handling, your `console.log` and equivalent |
+| **App-proxy logs** (Cloudflare Worker) | Per-request routing, status, body size for the `*.vendo.run` subdomain | Cloudflare Logs | "Why does the URL 404", upstream timeouts, KV staleness |
+
+Reads happen in the dashboard's Logs tab on each deployment. You don't need direct Railway or Cloudflare access.
+
+## Which to check first
+
+- **Deploy never reached `running`** → `deploy_logs`. The deploy worker's 13 phases (see [Railway deployments § Pipeline](/docs/infrastructure)) tell you exactly which step failed and why. `collect_app_logs_on_failure` runs automatically and dumps the container's build/runtime output into `deploy_logs` alongside the workflow trace.
+- **Deploy succeeded but the tool 500s** → compute logs. Your container's stdout/stderr is the source of truth.
+- **Tool returns 404 / "deployment not found"** → app-proxy logs. The KV mapping (`deploy:{subdomain}`) is either missing or wrong.
+- **Tool's API calls to OpenAI / Telegram / etc. fail with 401 or 402** → check the proxy adapter logs (a fourth surface, scoped to `{provider}-proxy.vendo.run`). 402 means the tenant's balance is zero. 401 typically means the proxy key is stale or the connection isn't bound.
+
+## What `deploy_logs` looks like
+
+```
+[deploy-abc123] validate_template           → ok
+[deploy-abc123] collect_secrets             → ok (3 generated)
+[deploy-abc123] provision_databases         → ok (neon: pg-xyz)
+[deploy-abc123] deploy_compute              → ok (railway: project-789)
+[deploy-abc123] health_check_done           → FAILED (timeout after 300s)
+[deploy-abc123] collect_app_logs_on_failure → captured 47 lines
+[deploy-abc123]   container stderr: ECONNREFUSED 127.0.0.1:6379
+```
+
+Each row is structured — query `deploy_logs` by `deployment_id`, `step`, or `level` from the dashboard. The container logs captured on failure are inlined into the same table for convenience.
+
+## Debug flow — failed deploy
+
+1. Open the deployment row → Logs tab → filter by `deploy_logs`.
+2. Find the first row with `level='error'`. The step name tells you which phase failed.
+3. Common failure modes by step:
+   - `validate_template` — manifest schema violation. Re-validate locally.
+   - `collect_secrets` — almost never fails; if it does, it's a Vendo platform issue.
+   - `provision_databases` — Neon or Railway provisioning hiccup. Retry.
+   - `deploy_compute` — image not pullable, build failed, or the registry rate-limited. Check the captured container logs.
+   - `health_check_done` — your readiness endpoint didn't respond 2xx in time. Most common cause: missing DB migration on first boot, or env var that's unset because of a missing integration binding.
+   - `bootstrap_admin` — your `seedEndpoint` returned an error. Check container logs.
+   - `await_domain_ready_done` — Cloudflare cert provisioning timing out. Usually a platform issue; destroy + retry.
+4. If a quick fix is possible (e.g. integration not bound), do it and retry from the dashboard.
+5. If the fix is in your code, cut a new patch version and the tenant can retry against the updated release.
+
+<Callout type="warn">
+Don't tear down a `failed` deployment to "start fresh." `POST /retry` reuses the original `vendo_api_key`, admin password, and user env vars — every step is idempotent. Teardown drops state you don't get back.
+</Callout>
+
+## Debug flow — running deployment misbehaving
+
+1. Reproduce the issue (have the tenant trigger the failing path, or do it yourself if internal).
+2. Compute logs → grep for the timestamp. Look for stack traces, uncaught exceptions, or non-2xx upstream responses.
+3. If the tool calls an integration and you see 401/402/429 from the proxy, switch to the proxy-side adapter logs to confirm whether it's a key issue (your connection binding), a balance issue (tenant out of credits), or a rate limit (upstream provider).
+4. If the failure correlates with a recent release, check whether the upgrade workflow actually swapped the image (see [Updating a tool](/docs/deploy-and-publish/operate/updating-a-tool)).
+
+## Structured logging in your tool
+
+The container surface is just stdout/stderr. Whatever your runtime writes there lands in compute logs. For things to search well later, write JSON lines with a `request_id` and `tenant_id`. Vendo doesn't enforce a format, but a consistent schema makes incidents an order of magnitude faster to triage.
+
+Don't log secrets, raw API keys, or `vendo_sk_*` proxy keys. Compute logs are retained and visible to whoever has admin access on the tenant.
+
+## Log retention
+
+- `deploy_logs` — retained indefinitely while the deployment row exists. Teardown deletes them.
+- Compute logs — Railway's default retention (7 days at time of writing; check the provider for current).
+- App-proxy logs — Cloudflare Logs retention (varies by plan).
+
+For long-term auditability, your tool should ship its own logs to a sink you control. Vendo's surfaces are for operational debugging, not compliance evidence.
+
+Next: [Updating a tool](/docs/deploy-and-publish/operate/updating-a-tool).

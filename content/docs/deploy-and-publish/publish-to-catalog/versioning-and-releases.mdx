@@ -1,0 +1,100 @@
+---
+title: Versioning & releases
+description: How tool_releases versioning works — what a new release means, what gets pinned, and the COALESCE trap to avoid.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+A **release** is a row in the `tool_releases` table pointing at one version of your manifest in `vendo-templates`. Only one release per tool can be `active` at a time (enforced by a unique partial index). The active release is what new deploys use. Existing deploys are unaffected — they snapshotted the manifest into `deployments.manifest` when they originally deployed.
+
+## What a new release means
+
+Cutting a new release is three things in sequence:
+
+1. **A new manifest version** at `vendo-templates/<slug>/<new-version>.json`. Bump `previousVersions` to include the old version.
+2. **A release migration** in the monorepo that:
+   - UPDATEs the existing active row to `status='inactive'`.
+   - INSERTs a new row pointing at `<new-version>` with `status='active'`.
+3. **A `supabase db push`** in prod to apply the migration.
+
+Once the migration applies, any tenant who clicks Deploy gets the new version. Existing tenants keep running on their pinned snapshot until you explicitly upgrade them (see [Rollout & upgrades](/docs/deploy-and-publish/publish-to-catalog/rollout-and-upgrades)).
+
+## Version-number conventions
+
+Use semver. The conventions Vendo actually cares about:
+
+- **Patch (1.0.0 → 1.0.1)** — image rebuild, no manifest shape changes, no integration changes. Safe to upgrade tenants en masse.
+- **Minor (1.0.x → 1.1.0)** — manifest shape changes that are additive (new optional `userInputs[]`, new optional integrations, additional services). Safe with smoke testing.
+- **Major (1.x.x → 2.0.0)** — anything that requires a tenant to re-bind, re-enter inputs, or accept new pricing. Treat as a migration; don't auto-upgrade.
+
+Vendo does not enforce semver — but the rollout tooling assumes it. If you ship a breaking change as a patch, the upgrade workflow has no signal to stop.
+
+## What `tool_releases` actually stores
+
+| Column | Where it comes from | Editable by hand |
+|---|---|---|
+| `tool_slug` | Migration | Never (FK to `apps_catalog.slug`) |
+| `version` | Migration | Once, during release |
+| `status` | Migration | Per release cut |
+| `vendo_manifest` | Migration (copy of manifest JSON) | Never (refreshed by sync action) |
+| `wizard_inputs` | Sync action (extracted from `userInputs[]`) | Never |
+| `wizard_layout` | Sync action (extracted from `wizardLayout`) | Never |
+| `requires` | Sync action (extracted from `integrations[]`) | Never |
+
+The `requires` column keeps the legacy name from when integrations were called "requires" — the data is your `integrations[]` array, copied verbatim by the sync action.
+
+## The COALESCE trap
+
+A common pattern in release migrations is to copy fields forward from the previous release:
+
+```sql
+-- DON'T DO THIS
+INSERT INTO tool_releases (tool_slug, version, status, requires)
+SELECT 'my-tool', '1.0.5', 'active', COALESCE(tr.requires, prev.requires)
+FROM ...;
+```
+
+`COALESCE` is null-aware, not empty-aware. If your new manifest has `"integrations": []`, the column is **`[]::jsonb`**, not `NULL`. `COALESCE([]::jsonb, prev.requires)` returns `[]::jsonb` — and your release ships with no integration bindings.
+
+<Callout type="warn">
+Every new deploy on a release with empty `requires` ships without integration env vars. The tool boots, looks for `TELEGRAM_BOT_TOKEN`, finds nothing, crashes. Always write `requires` explicitly from the manifest, never via `COALESCE` from the previous row.
+</Callout>
+
+Pattern that works:
+
+```sql
+INSERT INTO tool_releases (tool_slug, version, status, requires)
+VALUES (
+  'my-tool',
+  '1.0.5',
+  'active',
+  '[{"provider": "telegram"}]'::jsonb
+);
+```
+
+…or fetch it from the manifest JSON in the migration, but always source the array from the new version, never from the old one.
+
+## Pinning behavior
+
+When a tenant clicks Deploy, the deploy worker:
+
+1. Reads the active row from `tool_releases`.
+2. Fetches `templates/<slug>/<version>.json` from R2.
+3. **Copies the manifest into `deployments.manifest`** at the `validate_template` step.
+
+From that point on, the deployment is **pinned to that snapshot**. Editing the manifest in R2 after deploy has no effect on the running deployment. Cutting a new release has no effect on existing deployments until you upgrade them.
+
+This is intentional — it means a tenant's experience is stable across your releases until you explicitly migrate them.
+
+## Listing releases
+
+```sql
+SELECT version, status, created_at
+FROM tool_releases
+WHERE tool_slug = 'my-tool'
+ORDER BY created_at DESC;
+```
+
+You should see at most one `active` row and any number of `inactive` rows from previous cuts.
+
+Next: [Rollout & upgrades](/docs/deploy-and-publish/publish-to-catalog/rollout-and-upgrades) — moving existing tenants to a new release.

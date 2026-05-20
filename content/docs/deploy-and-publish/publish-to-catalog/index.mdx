@@ -1,0 +1,42 @@
+---
+title: Publish to the catalog
+description: List your tool publicly so any Vendo tenant can deploy it from the catalog.
+---
+
+import { Card, Cards } from "fumadocs-ui/components/card";
+
+Publishing puts your tool on the Vendo catalog. Any tenant browsing `vendo.run` sees the listing, runs through your wizard, and gets a managed deployment — billed in credits, isolated from every other tenant, upgraded when you ship new versions. You author one template manifest, submit it as a PR against `vendo-templates`, and Vendo handles the rest.
+
+## What you're publishing
+
+Three things, in three places:
+
+1. **A catalog entry** in `apps_catalog` (slug, name, type, marketing copy, pricing model). Created by a DB seed migration in the Vendo monorepo.
+2. **A template manifest** in `runvendo/vendo-templates` (services, databases, secrets, integrations, wizard layout). The file the deploy worker reads to provision a tenant's instance.
+3. **A release row** in `tool_releases` pointing at the manifest version. The pairing of catalog entry + active release is what makes a tool deployable.
+
+The catalog entry is created once. Manifests and releases are versioned and replaceable.
+
+## The submission flow at a glance
+
+1. Build and verify the tool locally ([Run locally as OSS](/docs/deploy-and-publish/local-oss)).
+2. Author the template manifest ([Manifest format](/docs/deploy-and-publish/publish-to-catalog/manifest)).
+3. Define the deploy wizard ([Wizard layout](/docs/deploy-and-publish/publish-to-catalog/wizard-layout)).
+4. Submit a PR against [`runvendo/vendo-templates`](https://github.com/runvendo/vendo-templates) ([Submission](/docs/deploy-and-publish/publish-to-catalog/submission)).
+5. Ship updates as new versions ([Versioning & releases](/docs/deploy-and-publish/publish-to-catalog/versioning-and-releases)).
+6. Manage tenant upgrades and rollouts ([Rollout & upgrades](/docs/deploy-and-publish/publish-to-catalog/rollout-and-upgrades)).
+
+## Read these in order
+
+<Cards>
+  <Card title="The vendo-templates repo" description="Structure, layout, and how the action validates submissions." href="/docs/deploy-and-publish/publish-to-catalog/templates-repo" />
+  <Card title="Manifest format" description="Every field of the template JSON, with examples." href="/docs/deploy-and-publish/publish-to-catalog/manifest" />
+  <Card title="Wizard layout" description="Design the configure-step UX tenants see at deploy time." href="/docs/deploy-and-publish/publish-to-catalog/wizard-layout" />
+  <Card title="Submission" description="Opening the PR and what review looks like." href="/docs/deploy-and-publish/publish-to-catalog/submission" />
+  <Card title="Versioning & releases" description="How new versions get registered and which version a deployment is pinned to." href="/docs/deploy-and-publish/publish-to-catalog/versioning-and-releases" />
+  <Card title="Rollout & upgrades" description="What happens to existing tenants when you ship a new version." href="/docs/deploy-and-publish/publish-to-catalog/rollout-and-upgrades" />
+</Cards>
+
+## Where it fits in the bigger picture
+
+The manifest references the SDK and integration declarations you authored in [Build a tool](/docs/build-a-tool). Publishing is the bridge between "I wrote a tool" and "any tenant can deploy it." Operating the deployed tool — logs, debugging, upgrades, suspend/resume — lives in [Operate](/docs/deploy-and-publish/operate).

@@ -1,0 +1,70 @@
+---
+title: The vendo-templates repo
+description: Structure and layout of runvendo/vendo-templates — where every catalog manifest lives.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Catalog manifests live in a dedicated repo: [`runvendo/vendo-templates`](https://github.com/runvendo/vendo-templates). It is the single source of truth for what the deploy worker provisions. Manifests are **not** stored in the Vendo monorepo, and they are **not** stored in your tool's own repo.
+
+## Repo layout
+
+```
+vendo-templates/
+├── README.md
+├── .github/workflows/
+│   └── publish-to-r2.yml
+└── <slug>/
+    ├── 1.0.0.json
+    ├── 1.0.1.json
+    └── 1.1.0.json
+```
+
+One directory per tool, named exactly the same as the tool's `apps_catalog.slug`. One JSON file per version, named `{semver}.json`. That's the entire convention.
+
+## How the publish action works
+
+On every push to `main`, a GitHub Action:
+
+1. **Validates** each manifest against [`manifest.schema.json`](https://github.com/runvendo/vendo/blob/main/cloudflare/deploy-worker/src/schema/manifest.schema.json). Invalid JSON or schema violations fail the action — the manifest never reaches R2.
+2. **Uploads** each `{slug}/{version}.json` to the `vendo-templates` R2 bucket at the same path.
+3. **Exposes** the file to the deploy worker, which fetches `templates/{slug}/{version}.json` at deploy time.
+
+R2 is content-addressed by `{slug}/{version}`. Once a version is uploaded, **do not edit the file in place** — every change is a new version. Existing deployments reference the manifest version that was active when they deployed.
+
+<Callout type="warn">
+Editing a published `1.0.0.json` in place is a footgun. Existing deployments snapshot the manifest into `deployments.manifest` at deploy time, so they keep running. But anything that re-fetches the manifest (e.g. retries) will pick up the silent change. Always cut a new version.
+</Callout>
+
+## Required workflow secrets
+
+The publish action needs three secrets configured on the `vendo-templates` repo. These are already wired by Vendo for the main repo; you only deal with them if you fork:
+
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+## What's NOT in the templates repo
+
+- **Catalog entry.** The row in `apps_catalog` lives in a DB seed migration in the Vendo monorepo, not here.
+- **Release row.** `tool_releases` is also driven by monorepo migrations.
+- **Adapter code.** Per-provider proxy adapters live in `packages/integrations/<slug>/` in the monorepo.
+- **Source code.** Your tool's container image and source code live wherever the image is built — usually a separate repo entirely. The manifest only references the image tag.
+
+## Naming and slug discipline
+
+The tool's slug is load-bearing in five places: the directory name here, `apps_catalog.slug`, `deployments.tool_slug`, the proxy adapter registry (if the tool defines one), and the deployment URL. Pick it once and never rename it. If you absolutely must rename, expect to write a data migration touching all five surfaces.
+
+## A minimal first PR
+
+For a brand-new tool:
+
+```
+vendo-templates/
+└── my-tool/
+    └── 1.0.0.json
+```
+
+That single file is enough to open a PR. The matching catalog entry and release row come from migrations in the Vendo monorepo — see [Submission](/docs/deploy-and-publish/publish-to-catalog/submission) for the full checklist.
+
+Next: [Manifest format](/docs/deploy-and-publish/publish-to-catalog/manifest) — what goes inside `{version}.json`.

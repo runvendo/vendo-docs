@@ -1,0 +1,29 @@
+---
+title: Operate
+description: Running a deployed tool — logs, debugging, updates, suspend/resume, and teardown.
+---
+
+import { Card, Cards } from "fumadocs-ui/components/card";
+
+A published tool isn't shipped, it's living. Tenants deploy it, run it, hit edge cases, suspend it when they're not using it, and occasionally tear it down. This subsection covers the operational surface a tool author works with after publishing.
+
+The operations are mostly tenant-driven through the dashboard — but as the tool author you're the one who interprets logs, ships fixes, and decides what happens when something goes wrong. None of this surface requires SSH or direct Railway access; everything flows through Vendo APIs.
+
+## What's on each page
+
+<Cards>
+  <Card title="Logs and debugging" description="The three log surfaces, where each comes from, and what they tell you." href="/docs/deploy-and-publish/operate/logs-and-debugging" />
+  <Card title="Updating a tool" description="Shipping a new version to tenants — how Vendo upgrades a running deployment." href="/docs/deploy-and-publish/operate/updating-a-tool" />
+  <Card title="Suspend & resume" description="What suspended state means, when it happens, and how to recover." href="/docs/deploy-and-publish/operate/suspend-resume" />
+  <Card title="Teardown" description="Destroying a deployment — what disappears, what survives, and what doesn't." href="/docs/deploy-and-publish/operate/teardown" />
+</Cards>
+
+## Read these in order on your first incident
+
+When something breaks for a tenant: **Logs and debugging** first to identify the failure mode. Then **Updating a tool** if the fix needs a new release, or **Suspend & resume** if the deployment got stuck in a transitional state. **Teardown** is rarely the answer — it's destructive and not something to reach for while debugging.
+
+## Where to look outside docs
+
+- The tenant's dashboard (`https://vendo.run`) shows `current_step`, `progress`, and per-step log entries from the deploy worker for any running deployment.
+- The deployment's compute logs (Railway, Cloudflare) are surfaced via the dashboard's Logs tab — no separate Railway access needed.
+- For platform-level issues (proxy 5xx, KV staleness, deploy worker faults) that look like tool bugs but aren't, contact Vendo support before re-cutting a release.

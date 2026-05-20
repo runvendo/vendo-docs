@@ -1,0 +1,88 @@
+---
+title: Rollout & upgrades
+description: What happens to existing tenant deployments when you ship a new release.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Cutting a new release ([Versioning & releases](/docs/deploy-and-publish/publish-to-catalog/versioning-and-releases)) does **nothing** to existing deployments. Each tenant's instance is pinned to the manifest it deployed against. Upgrades are explicit — either you initiate them, or the tenant does. This page covers what an upgrade actually does, how to roll one out, and how to roll back.
+
+## What an upgrade workflow does
+
+The deploy worker has a dedicated `UpgradeWorkflow` ([`cloudflare/deploy-worker/src/workflows/upgrade.ts`](https://github.com/runvendo/vendo/blob/main/cloudflare/deploy-worker/src/workflows/upgrade.ts)) that:
+
+1. Fetches the new active release manifest from R2.
+2. Validates it against the schema.
+3. Re-resolves env vars (picks up any new placeholders or integrations).
+4. Swaps the container image tag on each Railway service via `serviceInstanceUpdate({ source: { image } })`.
+5. Redeploys each service.
+6. Re-runs the readiness check.
+7. Updates `deployments.manifest` to the new snapshot and advances `tool_release_id`.
+
+If the health check fails after the image swap, the deployment is marked `failed` — Railway keeps the old running revision because redeploy is not destructive.
+
+<Callout type="warn">
+Without the image swap, redeploying just reruns the previously-set image. The image tag has to change for the upgrade to actually pull new code.
+</Callout>
+
+## Tenant-driven vs platform-driven upgrades
+
+**Tenant-driven** is the default. The dashboard shows an "Update available" banner on deployments whose pinned `tool_release_id` is older than the active release. The tenant clicks Update, which POSTs to `/api/deployments/[id]/upgrade` and kicks off the workflow.
+
+**Platform-driven** is what you do for security patches or hot fixes — you initiate the upgrade on every affected deployment without waiting for the tenant.
+
+There is no automatic background upgrade. Vendo never silently changes a tenant's running version.
+
+## Rolling out a patch (mass upgrade)
+
+For a security patch or fix where every existing deployment should move:
+
+1. Cut the new release.
+2. Query for deployments still on old versions:
+
+   ```sql
+   SELECT id, tenant_id, tool_release_id, status
+   FROM deployments
+   WHERE tool_slug = 'my-tool'
+     AND status = 'running'
+     AND tool_release_id IN (
+       SELECT id FROM tool_releases
+       WHERE tool_slug = 'my-tool' AND status = 'inactive'
+     );
+   ```
+
+3. For each row, POST `/api/deployments/[id]/upgrade` via an admin script. Rate-limit so you don't saturate Railway.
+4. Watch `deploy_logs` for failures and retry as needed.
+
+Vendo doesn't ship a one-click "upgrade everyone" UI — it would be too easy to take down every tenant of a tool simultaneously. A patch rollout is a deliberate, scriptable operation.
+
+## Rolling back
+
+Rollback is just an upgrade aimed backwards:
+
+1. Cut a new release pointing at the previous version (don't reactivate the old row — keep `created_at` ordering meaningful).
+2. Upgrade affected deployments to the new (older-content) release.
+
+Old manifest versions stay in R2 indefinitely. The image tag you reference has to still exist in its registry — if you garbage-collected `ghcr.io/me/my-tool:1.0.3`, rollback fails.
+
+## Restart vs upgrade vs redeploy
+
+| Operation | Image | Manifest | Env vars | Use when |
+|---|---|---|---|---|
+| **Restart** | Same | Same | Reapplied | Env var change took effect after edit |
+| **Upgrade** | New | New | Re-resolved | Shipping a new release |
+| **Retry (failed → pending)** | Same | Same | Same | A previous deploy died midway |
+
+`POST /restart` runs the `RestartWorkflow` which pushes every `deployment_env_vars` row into Railway via `variableUpsert` and redeploys. `POST /upgrade` runs the `UpgradeWorkflow` described above. `POST /retry` (only valid on `failed` rows) spins up a fresh `DeployWorkflow` that picks up where the previous attempt died — every step is idempotent.
+
+## Suspend/resume during rollout
+
+If you upgrade a `suspended` deployment, the upgrade resumes it first. Resumed deployments inherit the new version. This is usually what you want — sleeping deployments should not stay on a known-bad version.
+
+## What can break
+
+- **Env var rename across versions.** If `1.0.0` reads `BOT_TOKEN` and `1.1.0` reads `TELEGRAM_BOT_TOKEN`, existing deployments still have the old name in `deployment_env_vars` until the upgrade re-resolves. Use the provider's `connectionEnvVars` registry to keep names stable across releases.
+- **Database schema migrations.** Your tool owns its Postgres. If `1.1.0` needs a new column, your container's startup must run the migration before serving traffic. The readiness probe is your gate.
+- **Volume layout changes.** Volumes are preserved across upgrades. Moving data from `/data/v1` to `/data/v2` is your job, not Vendo's.
+
+Next: [Operate](/docs/deploy-and-publish/operate) — running a tool after it's deployed.

@@ -1,0 +1,78 @@
+---
+title: Submission
+description: Open the PR against vendo-templates, get it reviewed, and watch your tool go live.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Submitting a tool to the public catalog is two PRs and a migration:
+
+1. A PR against [`runvendo/vendo-templates`](https://github.com/runvendo/vendo-templates) adding `{slug}/{version}.json`.
+2. A PR against the Vendo monorepo with the DB seed migration and the release migration.
+
+The monorepo PR depends on the templates PR being merged first (so the manifest exists in R2 when the release row points at it). Submit them together — reviewers will sequence the merges.
+
+## Templates PR — what to include
+
+```
+vendo-templates/
+└── <slug>/
+    └── <version>.json
+```
+
+That's it. One file. Push to a branch, open a PR against `main` of `runvendo/vendo-templates`, with a body that includes:
+
+- **What the tool does** in one sentence.
+- **Repo URL** for the source code or container image.
+- **Image tag** referenced in `services[].image` (and which registry; `ghcr.io` is preferred).
+- **Integrations** required (`openrouter`, `telegram`, etc.) — and whether any are new providers that need a `packages/integrations/<slug>/` adapter in the monorepo.
+- **Pricing intent** — `credits` if the tool calls the proxy, `free` otherwise. Don't set `pricing: "free"` on a tool that calls the proxy; billing is silently skipped.
+
+## What the action checks automatically
+
+The `publish-to-r2.yml` action validates the manifest against the schema on every push. The PR cannot merge if validation fails. The schema covers:
+
+- Required fields (`slug`, `name`, `version`, `services`, `readiness`, `integrations`).
+- One service must have `role: "web"`.
+- Service-level shape: `image` OR `buildArtifact` (not both), `port`, `startCommand`.
+- Env-var placeholder syntax (`${...}`) is well-formed.
+- `userInputs[]` and `wizardLayout` references resolve.
+
+Schema-valid does **not** mean correct. The reviewer still checks the actual content.
+
+## What the reviewer checks
+
+- **Slug discipline.** Slug matches across the directory name, the manifest field, the monorepo seed migration, and the proxy adapter (if any). See [The vendo-templates repo § Naming](/docs/deploy-and-publish/publish-to-catalog/templates-repo).
+- **Image is pullable.** The tag exists and is publicly accessible (or the registry credentials are wired into the Railway template).
+- **Integrations exist.** Every `integrations[].provider` slug matches a row in `packages/integrations/<slug>/integration.ts` in the monorepo. New providers need their own PR first.
+- **`integrations[]` is not silently empty.** If your tool calls third-party APIs, the array must list them. See the COALESCE trap in [Versioning & releases](/docs/deploy-and-publish/publish-to-catalog/versioning-and-releases).
+- **Wizard sanity.** A `["*"]` input sweep exists if `wizardLayout` is defined, so forgotten keys still surface.
+- **Healthcheck is real.** `readiness.endpoint` actually responds 2xx on a fresh container.
+- **Data preservation.** Any state that must survive suspend/resume lives in Postgres, R2, KV, or a Railway volume — never in-container filesystem outside a volume.
+- **Pricing model matches behavior.** `pricing: "free"` only on tools that never call the proxy.
+
+## Monorepo PR — what to include
+
+A reviewer will ask for these alongside the templates PR:
+
+1. **DB seed migration** — INSERT into `apps_catalog` with `slug`, `tool_type`, `auth_mode`, `category`, `marketing` JSONB, and routing flags (`surface_all_connections`, `supported_connections`). Pattern: existing tool migrations under `supabase/migrations/`.
+2. **Auth-mode migration** — only if the tool's `auth_mode` disagrees with the default `password`.
+3. **Release migration** — INSERT a `tool_releases` row pointing at `{slug}/{version}` with `status='active'`. If the tool already has an active release, the migration marks the old row `inactive` first.
+4. **Proxy adapter** — if the tool calls a new provider that doesn't yet have an adapter in `proxy/src/adapters/`.
+
+<Callout type="warn">
+Migrations don't apply automatically on merge — they need `supabase db push` against the prod project. The reviewer will run this; don't run it yourself unless you're on the Vendo team and have been asked to.
+</Callout>
+
+## After merge
+
+Once both PRs merge and the migration is applied:
+
+1. The publish action uploads `{slug}/{version}.json` to R2.
+2. The release row goes active.
+3. The catalog query starts returning your tool to public surfaces (unless `marketing.internal = true`).
+4. The next tenant who clicks Deploy gets your tool.
+
+Watch your first real-tenant deploy in `deploy_logs` and verify it advances cleanly from `validate_template` to `notify_user`.
+
+Next: [Versioning & releases](/docs/deploy-and-publish/publish-to-catalog/versioning-and-releases).
